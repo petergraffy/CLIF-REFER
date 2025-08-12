@@ -1,0 +1,32 @@
+# R specific gitignores
+.Rprofile
+.Rhistory
+.Rprofile
+.Ruserdata
+.DS_Store
+*.Rproj
+.Rproj.user
+
+## ignore the renv initialization file
+initialize_renv.R
+
+## ignore filtered CLIF tables stored as Rdata
+*.RData
+
+#ignore source CLIF_ files 
+CLIF_*.parquet
+CLIF_*.csv
+CLIF_*.fst
+
+#ignore the identifier app
+CLIF_cohort_identifier*
+
+# ignore file used to initialize renv when creating the template
+initialize_renv.R
+
+# ignore filtered CLIF tables stored as Rdata
+*.RData
+
+# ignore pdf reports and rendered html
+*.pdf
+*.html

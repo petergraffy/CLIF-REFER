@@ -2,11 +2,11 @@
 
 ## CLIF VERSION 
 
-[major].[minor]
+2.0.0
 
 ## Objective
 
-*Describe the project objective*
+To determine the clinical and non-clinical factors associated with acute respiratory failure in ICU patients in Chicago.
 
 ## Required CLIF tables and fields
 

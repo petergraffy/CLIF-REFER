@@ -1,10 +1,10 @@
-# CLIF Project: Environmental and Clinical Determinants of Acute Respiratory Failure Trajectories in ICU Patients
+# Environmental and Clinical Determinants of Acute Respiratory Failure Trajectories in ICU Patients
 
 ## CLIF VERSION
 2.0.0
 
 ## Objective
-To determine clinical and non-clinical factors—including environmental exposures such as chronic air pollution and community-level vulnerability—that are associated with the onset and outcomes of acute respiratory failure in ICU patients in Chicago.
+To determine clinical and non-clinical factors, including environmental exposures such as chronic air pollution and heat vulnerability, that are associated with the onset and outcomes of acute respiratory failure in ICU patients in Chicago.
 
 ## Required CLIF tables and fields
 

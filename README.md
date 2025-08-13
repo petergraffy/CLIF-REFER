@@ -1,30 +1,36 @@
-# *CLIF Project Title*
+# CLIF Project: Environmental and Clinical Determinants of Acute Respiratory Failure Trajectories in ICU Patients
 
-## CLIF VERSION 
-
+## CLIF VERSION
 2.0.0
 
 ## Objective
-
-To determine the clinical and non-clinical factors associated with acute respiratory failure in ICU patients in Chicago.
+To determine clinical and non-clinical factors—including environmental exposures such as chronic air pollution and community-level vulnerability—that are associated with the onset and outcomes of acute respiratory failure in ICU patients in Chicago.
 
 ## Required CLIF tables and fields
 
-Please refer to the online [CLIF data dictionary](https://clif-consortium.github.io/website/data-dictionary.html), [ETL tools](https://github.com/clif-consortium/CLIF/tree/main/etl-to-clif-resources), and [specific table contacts](https://github.com/clif-consortium/CLIF?tab=readme-ov-file#relational-clif) for more information on constructing the required tables and fields. 
+**Demographics**
+- **patient**: `patient_id`, `birth_date`, `race_category`, `ethnicity_category`, `sex_category`, `zip_code`, `preferred_language`
 
-*List all required tables for the project here, and provide a brief rationale for why they are required.*
+**Hospitalization & ICU stay**
+- **hospitalization**: `patient_id`, `hospitalization_id`, `admission_dttm`, `discharge_dttm`, `age_at_admission`, `admitting_service`, `discharge_service`
 
-Example:
-The following tables are required:
-1. **patient**: `patient_id`, `race_category`, `ethnicity_category`, `sex_category`
-2. **hospitalization**: `patient_id`, `hospitalization_id`, `admission_dttm`, `discharge_dttm`, `age_at_admission`
-3. **vitals**: `hospitalization_id`, `recorded_dttm`, `vital_category`, `vital_value`
-   - `vital_category` = 'heart_rate', 'resp_rate', 'sbp', 'dbp', 'map', 'resp_rate', 'spo2'
-4. **labs**: `hospitalization_id`, `lab_result_dttm`, `lab_category`, `lab_value`
-   - `lab_category` = 'lactate'
-5. **medication_admin_continuous**: `hospitalization_id`, `admin_dttm`, `med_name`, `med_category`, `med_dose`, `med_dose_unit`
-   - `med_category` = "norepinephrine", "epinephrine", "phenylephrine", "vasopressin", "dopamine", "angiotensin", "nicardipine", "nitroprusside", "clevidipine", "cisatracurium"
-6. **respiratory_support**: `hospitalization_id`, `recorded_dttm`, `device_category`, `mode_category`, `tracheostomy`, `fio2_set`, `lpm_set`, `resp_rate_set`, `peep_set`, `resp_rate_obs`
+**Clinical trajectories**
+- **vitals**: `hospitalization_id`, `recorded_dttm`, `vital_category`, `vital_value`
+  - `vital_category` = 'heart_rate', 'resp_rate', 'sbp', 'dbp', 'map', 'spo2', 'temperature'
+- **labs**: `hospitalization_id`, `lab_result_dttm`, `lab_category`, `lab_value`
+  - `lab_category` = 'lactate', 'creatinine', 'pao2', 'paco2', 'wbc'
+
+**Therapeutics**
+- **medication_admin_continuous**: `hospitalization_id`, `admin_dttm`, `med_name`, `med_category`, `med_dose`, `med_dose_unit`
+  - `med_category` = "norepinephrine", "epinephrine", "phenylephrine", "vasopressin", "dopamine", "angiotensin", "nicardipine", "nitroprusside", "clevidipine", "cisatracurium"
+
+**Respiratory support**
+- **respiratory_support**: `hospitalization_id`, `recorded_dttm`, `device_category`, `mode_category`, `fio2_set`, `peep_set`, `resp_rate_set`, `tidal_volume_set`, `plateau_pressure`, `pao2_fio2_ratio`
+
+**Diagnosis & outcomes**
+- **diagnosis**: `hospitalization_id`, `diagnosis_code`, `diagnosis_category`, `diagnosis_type`
+
+- **icu_outcomes**: `hospitalization_id`, `icu_mortality`, `hospital_mortality`, `icu_**_**
 
 ## Cohort identification
 *Describe study cohort inclusion and exclusion criteria here*

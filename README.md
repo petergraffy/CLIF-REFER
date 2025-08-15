@@ -14,30 +14,47 @@ To determine clinical and non-clinical factors, including environmental exposure
 **Hospitalization & ICU stay**
 - **hospitalization**: `patient_id`, `hospitalization_id`, `admission_dttm`, `discharge_dttm`, `age_at_admission`, `admitting_service`, `discharge_service`
 
-**Clinical trajectories**
-- **vitals**: `hospitalization_id`, `recorded_dttm`, `vital_category`, `vital_value`
+**Clinical trajectories (type-specific)**
+- **vitals**: `hospitalization_id`, `recorded_dttm`, `vital_category`, `vital_value`  
   - `vital_category` = 'heart_rate', 'resp_rate', 'sbp', 'dbp', 'map', 'spo2', 'temperature'
-- **labs**: `hospitalization_id`, `lab_result_dttm`, `lab_category`, `lab_value`
-  - `lab_category` = 'lactate', 'creatinine', 'pao2', 'paco2', 'wbc'
+  - Rationale: Key for trending oxygen saturation and respiratory rate.
+
+- **labs**: `hospitalization_id`, `lab_result_dttm`, `lab_category`, `lab_value`  
+  - For hypoxemic ARF: `lab_category` = 'pao2', 'fio2', 'pao2_fio2_ratio', 'spo2'  
+  - For hypercapnic ARF: `lab_category` = 'paco2', 'ph', 'bicarbonate'  
 
 **Therapeutics**
 - **medication_admin_continuous**: `hospitalization_id`, `admin_dttm`, `med_name`, `med_category`, `med_dose`, `med_dose_unit`
   - `med_category` = "norepinephrine", "epinephrine", "phenylephrine", "vasopressin", "dopamine", "angiotensin", "nicardipine", "nitroprusside", "clevidipine", "cisatracurium"
 
 **Respiratory support**
-- **respiratory_support**: `hospitalization_id`, `recorded_dttm`, `device_category`, `mode_category`, `fio2_set`, `peep_set`, `resp_rate_set`, `tidal_volume_set`, `plateau_pressure`, `pao2_fio2_ratio`
+- **respiratory_support**: `hospitalization_id`, `recorded_dttm`, `device_category`, `mode_category`, `fio2_set`, `peep_set`, `resp_rate_set`, `tidal_volume_set`, `plateau_pressure`, `pao2_fio2_ratio`  
+  - Rationale: Tracks escalation or titration of ventilatory support for each ARF subtype.
 
 **Diagnosis & outcomes**
-- **diagnosis**: `hospitalization_id`, `diagnosis_code`, `diagnosis_category`, `diagnosis_type`
+- **diagnosis**: `hospitalization_id`, `diagnosis_code`, `diagnosis_category`, `diagnosis_type`  
+  - Hypoxemic ARF: ICD-10 `J96.0x`  
+  - Hypercapnic ARF: ICD-10 `J96.1x`  
+  - Acute on chronic respiratory failure: `J96.2x` (specify hypoxemic vs hypercapnic if coded)
+- **icu_outcomes**: `icu_mortality`, `hospital_mortality`, `icu_length_of_stay`, `hospital_length_of_stay`
 
-- **icu_outcomes**: `hospitalization_id`, `icu_mortality`, `hospital_mortality`, `icu_**_**
+---
 
 ## Cohort identification
-*Describe study cohort inclusion and exclusion criteria here*
 
-## Expected Results
+**Inclusion criteria**
+1. Adult patients (≥18 years) admitted to ICU between 2015–2025.
+2. At least one documented ICD-10 diagnosis of ARF:
+   - Hypoxemic: J96.0x
+   - Hypercapnic: J96.1x
+   - Acute on chronic (specify type if possible): J96.2x
+3. Available ABG and/or continuous pulse oximetry data within ±24h of ICU admission.
+4. Residential ZIP code for environmental data linkage.
 
-*Describe the output of the analysis. The final project results should be saved in the [`output/final`](output/README.md) directory.*
+**Exclusion criteria**
+- Missing key demographic data (age, sex, race).
+- Hospitalizations <24 hours in ICU.
+- Repeat ICU stays within same hospitalization (only first considered for primary analysis).
 
 ## Detailed Instructions for running the project
 

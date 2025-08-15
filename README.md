@@ -17,7 +17,6 @@ To determine clinical and non-clinical factors, including environmental exposure
 **Clinical trajectories (type-specific)**
 - **vitals**: `hospitalization_id`, `recorded_dttm`, `vital_category`, `vital_value`  
   - `vital_category` = 'heart_rate', 'resp_rate', 'sbp', 'dbp', 'map', 'spo2', 'temperature'
-  - Rationale: Key for trending oxygen saturation and respiratory rate.
 
 - **labs**: `hospitalization_id`, `lab_result_dttm`, `lab_category`, `lab_value`  
   - For hypoxemic ARF: `lab_category` = 'pao2', 'fio2', 'pao2_fio2_ratio', 'spo2'  
@@ -29,7 +28,6 @@ To determine clinical and non-clinical factors, including environmental exposure
 
 **Respiratory support**
 - **respiratory_support**: `hospitalization_id`, `recorded_dttm`, `device_category`, `mode_category`, `fio2_set`, `peep_set`, `resp_rate_set`, `tidal_volume_set`, `plateau_pressure`, `pao2_fio2_ratio`  
-  - Rationale: Tracks escalation or titration of ventilatory support for each ARF subtype.
 
 **Diagnosis & outcomes**
 - **diagnosis**: `hospitalization_id`, `diagnosis_code`, `diagnosis_category`, `diagnosis_type`  

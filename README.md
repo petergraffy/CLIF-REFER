@@ -34,11 +34,11 @@ To determine clinical and non-clinical factors, including environmental exposure
   - Hypoxemic ARF: ICD-10 `J96.0x`  
   - Hypercapnic ARF: ICD-10 `J96.1x`  
   - Acute on chronic respiratory failure: `J96.2x` (specify hypoxemic vs hypercapnic if coded)
-  - Perioperative respiratory failure as a control:
+- Perioperative respiratory failure as a control:
   **Control cohort (perioperative respiratory failure)**
-- ICD-10 `J95.82`: Acute pulmonary insufficiency following thoracic surgery
-- ICD-10 `J95.83`: Acute pulmonary insufficiency following nonthoracic surgery
-- ICD-10 `J95.84`: Acute and chronic respiratory failure following surgery
+  - ICD-10 `J95.82`: Acute pulmonary insufficiency following thoracic surgery
+  - ICD-10 `J95.83`: Acute pulmonary insufficiency following nonthoracic surgery
+  - ICD-10 `J95.84`: Acute and chronic respiratory failure following surgery
 - **icu_outcomes**: `icu_mortality`, `hospital_mortality`, `icu_length_of_stay`, `hospital_length_of_stay`
 
 ---

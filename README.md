@@ -13,72 +13,46 @@ ICU patients in Chicago.
 
 ## Required CLIF tables and fields
 
-**Demographics** 
+**Demographics**
 
-- **patient**: `patient_id`, `birth_date`,
-`race_category`, `ethnicity_category`, `sex_category`, `zip_code`,
-`preferred_language`
+- **patient**: `patient_id`, `birth_date`, `race_category`, `ethnicity_category`, `sex_category`, `preferred_language`
+  - *Note:* `zip_code` and census-derived fields are captured on the **hospitalization** record (see below).
 
-***-\> Would include death_dttm***
+**Hospitalization & ICU stay**
+- **hospitalization**: `patient_id`, `hospitalization_id`, `admission_dttm`, `discharge_dttm`, `age_at_admission`, `admitting_service`, `discharge_service`, `zip_code`, `death_dttm`
+  - (Depending on availability) geocoded linkage such as `latitude`, `longitude`, `census_tract`, `census_block_group`, `county`, etc.
 
-**Hospitalization & ICU stay** 
-- **hospitalization**: `patient_id`,
-`hospitalization_id`, `admission_dttm`, `discharge_dttm`,
-`age_at_admission`, `admitting_service`, `discharge_service`
+**Clinical trajectories (type-specific)**
+- **vitals**: `hospitalization_id`, `recorded_dttm`, `vital_category`, `vital_value`  
+  - Include **all** available `vital_category` values. At minimum: `'heart_rate'`, `'resp_rate'`, `'sbp'`, `'dbp'`, `'map'`, `'spo2'`, `'temperature'`, **`'height'`**, **`'weight'`**.
 
-***-\> I think the zip code and census data is actually from the
-hospitalization table not patient***
+- **labs**: `hospitalization_id`, `lab_result_dttm`, `lab_category`, `lab_value`
+  - For hypoxemic ARF: `lab_category` ∈ `'pao2'`, `'fio2'`, `'pao2_fio2_ratio'`, `'spo2'`
+  - For hypercapnic ARF: `lab_category` ∈ `'paco2'`, `'ph'`, `'bicarbonate'`
 
-**Clinical trajectories (type-specific)** 
-- **vitals**:
-`hospitalization_id`, `recorded_dttm`, `vital_category`, `vital_value`\
-  - `vital_category` = 'heart_rate', 'resp_rate', 'sbp', 'dbp', 'map',
-'spo2', 'temperature'
+**Therapeutics**
+- **medication_admin_continuous**: `hospitalization_id`, `admin_dttm`, `med_name`, `med_category`, `med_dose`, `med_dose_unit`  
+  - Vasopressors/vasoactives: `"norepinephrine"`, `"epinephrine"`, `"phenylephrine"`, `"vasopressin"`, `"dopamine"`, `"angiotensin"`  
+  - Antihypertensives (continuous): `"nicardipine"`, `"nitroprusside"`, **`"nitroglycerin"`**  
+  - Neuromuscular blockade: `"cisatracurium"`, **`"vecuronium"`**, **`"rocuronium"`**  
+  - Respiratory/airway: **`"naloxone"`** (narcan), **`"albuterol_continuous"`** (inhaled continuous albuterol)  
+  - Sedation/analgesia (continuous): **`"propofol"`**, **`"midazolam"`**, **`"dexmedetomidine"`**, **`"fentanyl"`**
 
--\> ***Would pull all the vital_category data including height and
-weight as this affects respiratory mechanics while ventilated***
+**Respiratory support**
+- **respiratory_support**: `hospitalization_id`, `recorded_dttm`, `device_category`, `mode_category`, `fio2_set`, `peep_set`, `resp_rate_set`, `tidal_volume_set`, `plateau_pressure`, `pao2_fio2_ratio`
 
--   **labs**: `hospitalization_id`, `lab_result_dttm`, `lab_category`,
-    `lab_value`
-    -   For hypoxemic ARF: `lab_category` = 'pao2', 'fio2',
-        'pao2_fio2_ratio', 'spo2'
-    -   For hypercapnic ARF: `lab_category` = 'paco2', 'ph',
-        'bicarbonate'
+**Diagnosis & outcomes**
+- **diagnosis**: `hospitalization_id`, `diagnosis_code`, `diagnosis_category`, `diagnosis_type`  
+  - Hypoxemic ARF: ICD-10 `J96.0x`  
+  - Hypercapnic ARF: ICD-10 `J96.1x`  
+  - Acute on chronic respiratory failure: `J96.2x` (specify hypoxemic vs hypercapnic if coded)
+- **icu_outcomes**: `icu_mortality`, `hospital_mortality`, `icu_length_of_stay`, `hospital_length_of_stay`
 
-**Therapeutics** 
-- **medication_admin_continuous**:
-`hospitalization_id`, `admin_dttm`, `med_name`, `med_category`,
-`med_dose`, `med_dose_unit` - `med_category` = "norepinephrine",
-"epinephrine", "phenylephrine", "vasopressin", "dopamine",
-"angiotensin", "nicardipine", "nitroprusside", "clevidipine",
-"cisatracurium"
+**Control cohort (perioperative respiratory failure)**
+- ICD-10 `J95.82`: Acute pulmonary insufficiency following thoracic surgery  
+- ICD-10 `J95.83`: Acute pulmonary insufficiency following nonthoracic surgery  
+- ICD-10 `J95.84`: Acute and chronic respiratory failure following surgery
 
-***-\> Would recommend being more inclusive. From the
-medication_admin_continuous table, would also include narcan, inhaled
-continuous albuterol, vecuronium, rocuronium (to capture all
-paralytics), nitroglycerin (to round out your nicardipine,
-nitroprusside, and clevidipine to capture continuous antihypertensives).
-Also consider the continuous sedation meds (more severe respiratory
-failure on the ventilator often requires deeper sedation).***
-
-**Respiratory support** 
-- **respiratory_support**: `hospitalization_id`,
-`recorded_dttm`, `device_category`, `mode_category`, `fio2_set`,
-`peep_set`, `resp_rate_set`, `tidal_volume_set`, `plateau_pressure`,
-`pao2_fio2_ratio`
-
-**Diagnosis & outcomes** - **diagnosis**: `hospitalization_id`,
-`diagnosis_code`, `diagnosis_category`, `diagnosis_type`\
-- Hypoxemic ARF: ICD-10 `J96.0x`\
-- Hypercapnic ARF: ICD-10 `J96.1x`\
-- Acute on chronic respiratory failure: `J96.2x` (specify hypoxemic vs
-hypercapnic if coded) - Perioperative respiratory failure as a control:
-**Control cohort (perioperative respiratory failure)** - ICD-10
-`J95.82`: Acute pulmonary insufficiency following thoracic surgery -
-ICD-10 `J95.83`: Acute pulmonary insufficiency following nonthoracic
-surgery - ICD-10 `J95.84`: Acute and chronic respiratory failure
-following surgery - **icu_outcomes**: `icu_mortality`,
-`hospital_mortality`, `icu_length_of_stay`, `hospital_length_of_stay`
 
 ------------------------------------------------------------------------
 

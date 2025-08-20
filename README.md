@@ -85,17 +85,17 @@ ICU patients in Chicago.
 4.  Residential ZIP code for environmental data linkage.
 
 ***-\> Note that mixed hypoxic and hypercapnic respiratory failure is
-common and should be accounted for if patients. See new definitions
-above***
+common and should be accounted for.***
 
 ***-\> Also note that for SpO2 and PaO2, these numbers are directly
 affected by supplemental oxygen (FiO2) via whatever delivery mechanism.
 The definitions for ARF we choose for these values will be on room air
 (21% FiO2). P/F ratio can define ARF even on supplemental oxygen.***
 
-**Exclusion criteria** - Missing key demographic data (age, sex,
-race). - Hospitalizations \<24 hours in ICU. - Repeat ICU stays within
-same hospitalization (only first considered for primary analysis).
+**Exclusion criteria** 
+- Missing key demographic data (age, sex, race). 
+- Hospitalizations \<24 hours in ICU. 
+- Repeat ICU stays within same hospitalization (only first considered for primary analysis).
 
 **Bibliography for definitions of ARF**
 

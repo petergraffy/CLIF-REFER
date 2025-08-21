@@ -15,12 +15,12 @@ ICU patients in Chicago.
 
 **Demographics**
 
-- **patient**: `patient_id`, `birth_date`, `race_category`, `ethnicity_category`, `sex_category`, `preferred_language`
+- **patient**: `patient_id`, `birth_date`, `race_category`, `ethnicity_category`, `sex_category`, `preferred_language`, `death_dttm`
   - *Note:* `zip_code` and all other geocoding fields are captured on the **hospitalization** record (see below).
 
 **Hospitalization & ICU stay**
-- **hospitalization**: `patient_id`, `hospitalization_id`, `admission_dttm`, `discharge_dttm`, `age_at_admission`, `admitting_service`, `discharge_service`, `zip_code`, `death_dttm`
-  - (Depending on availability) geocoded linkage such as `latitude`, `longitude`, `census_tract`, `census_block_group`, `county`, etc.
+- **hospitalization**: `patient_id`, `hospitalization_id`, `admission_dttm`, `discharge_dttm`, `age_at_admission`, `discharge_name`, `discharge_category`, `zip_code`, `county_code`
+  - (Depending on availability) geocoded linkage such as `latitude`, `longitude`, `census_tract`, `census_block_group`, etc.
 
 **Clinical trajectories (type-specific)**
 - **vitals**: `hospitalization_id`, `recorded_dttm`, `vital_category`, `vital_value`  
@@ -47,7 +47,7 @@ ICU patients in Chicago.
   - Hypercapnic ARF: ICD-10 `J96.1x`  
   - Acute on chronic respiratory failure: `J96.2x` (specify hypoxemic vs hypercapnic if coded)
 
-- **icu_outcomes**: `icu_mortality`, `hospital_mortality`, `icu_length_of_stay`, `hospital_length_of_stay`
+- **adt**: `hospitalization_id`, `in_dttm`, `out_dttm`,
 
 **Control cohort (perioperative respiratory failure)**
 - ICD-10 `J95.82`: Acute pulmonary insufficiency following thoracic surgery  

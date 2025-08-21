@@ -24,11 +24,11 @@ ICU patients in Chicago.
 
 **Clinical trajectories (type-specific)**
 - **vitals**: `hospitalization_id`, `recorded_dttm`, `vital_category`, `vital_value`  
-  - Include **all** available `vital_category` values. At minimum: `'heart_rate'`, `'resp_rate'`, `'sbp'`, `'dbp'`, `'map'`, `'spo2'`, `'temperature'`, `'height'`, `'weight'`.
+  - Include **all** available `vital_category` values. At minimum: `'heart_rate'`, `'respiratory_rate'`, `'sbp'`, `'dbp'`, `'map'`, `'spo2'`, `'temp_c'`, `'height'`, `'weight'`.
 
-- **labs**: `hospitalization_id`, `lab_result_dttm`, `lab_category`, `lab_value`
-  - For hypoxemic ARF: `lab_category` ∈ `'pao2'`, `'fio2'`, `'pao2_fio2_ratio'`, `'spo2'`
-  - For hypercapnic ARF: `lab_category` ∈ `'paco2'`, `'ph'`, `'bicarbonate'`
+- **labs**: `hospitalization_id`, `lab_result_dttm`, `lab_category`, `lab_value`, `lab_value_numeric`
+  - For hypoxemic ARF: `lab_category` ∈ `'po2_arterial'`, `'so2_arterial'`
+  - For hypercapnic ARF: `lab_category` ∈ `'pco2_arterial'`, `'ph_arterial'`, `'bicarbonate'`
 
 **Therapeutics**
 - **medication_admin_continuous**: `hospitalization_id`, `admin_dttm`, `med_name`, `med_category`, `med_dose`, `med_dose_unit`  
@@ -39,7 +39,7 @@ ICU patients in Chicago.
   - Sedation/analgesia (continuous): `"propofol"`, `"midazolam"`, `"dexmedetomidine"`, `"fentanyl"`
 
 **Respiratory support**
-- **respiratory_support**: `hospitalization_id`, `recorded_dttm`, `device_category`, `mode_category`, `fio2_set`, `peep_set`, `resp_rate_set`, `tidal_volume_set`, `plateau_pressure`, `pao2_fio2_ratio`
+- **respiratory_support**: `hospitalization_id`, `recorded_dttm`, `device_category`, `mode_category`, `fio2_set`, `peep_set`, `resp_rate_set`, `tidal_volume_set`, `plateau_pressure`
 
 **Diagnosis & outcomes**
 - **hospital_diagnosis**: `hospitalization_id`, `diagnosis_code`, `diagnosis_category`, `diagnosis_type`  
@@ -47,7 +47,7 @@ ICU patients in Chicago.
   - Hypercapnic ARF: ICD-10 `J96.1x`  
   - Acute on chronic respiratory failure: `J96.2x` (specify hypoxemic vs hypercapnic if coded)
 
-- **adt**: `hospitalization_id`, `in_dttm`, `out_dttm`,
+- **adt**: `hospitalization_id`, `in_dttm`, `out_dttm`, `location_category`, `location_type`
 
 **Control cohort (perioperative respiratory failure)**
 - ICD-10 `J95.82`: Acute pulmonary insufficiency following thoracic surgery  

@@ -120,7 +120,7 @@ if (include_er_deaths) {
 
 # Export list of hospitalization IDs
 save(cohort_hospitalization_ids, 
-     file = here("study_cohort/01_cohort_hospitalization_ids.RData"))
+     file = here("output/intermediate/01_cohort_hospitalization_ids.RData"))
 
 # Utility: filter tables by hospitalization_id
 filter_clif_table <- function(table, filter_col, cohort_ids, select_cols = NULL) {
@@ -153,16 +153,16 @@ clif_patient_cohort <- filter_clif_table(clif_patient, "patient_id", cohort_pati
 
 # Save filtered tables
 save(list = ls(pattern = "clif_.*_cohort"), 
-     file = here("study_cohort/01_clif_cohort_tables.RData"))
+     file = here("output/intermediate/01_clif_cohort_tables.RData"))
 
 # Table 1: patient-level
-admits_per_patient <- clif_hospitalization_cohort %>%
+admits_per_patient <- clif_hospitalization_filtered %>%
   group_by(patient_id) %>%
   summarise(n_hospitalizations = n())
 
 table_one_patient <- clif_patient_cohort %>%
   left_join(admits_per_patient, by = "patient_id") %>%
-  left_join(clif_hospitalization_cohort %>% select(patient_id, admission_dttm), by = "patient_id") %>%
+  left_join(clif_hospitalization_filtered %>% select(patient_id, admission_dttm), by = "patient_id") %>%
   mutate(age = as.numeric(difftime(admission_dttm, birth_date, units = "days")) / 365.25) %>%
   select(age, sex_category, race_category, ethnicity_category, 
          n_hospitalizations, language_name) %>%
@@ -171,13 +171,14 @@ table_one_patient <- clif_patient_cohort %>%
 print(table_one_patient)
 
 # Table 1: hospitalization-level
-ever_icu <- clif_adt_cohort %>%
+ever_icu <- clif_adt %>%
+  filter(hospitalization_id %in% cohort_hospitalization_ids) %>%
   filter(location_category == "icu") %>%
   select(hospitalization_id) %>%
   mutate(ever_icu = 1) %>%
   distinct()
 
-table_one_hospitalization <- clif_hospitalization_cohort %>%
+table_one_hospitalization <- clif_hospitalization_filtered %>%
   mutate(length_of_stay = as.numeric(as.Date(discharge_dttm) - 
                                        as.Date(admission_dttm), units = "days")) %>%
   select(patient_id, hospitalization_id, age_at_admission, discharge_category, 

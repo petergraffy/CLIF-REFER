@@ -745,7 +745,93 @@ cat("\nLoaded required CLIF tables: ", paste(names(clif_tables), collapse = ", "
  writeLines(svg_txt, svg_path)
  rsvg::rsvg_png(svg_path, png_path, width = 1600, height = 1100)
 
+ # ===============================
+ # Perioperative ARF Control Cohort
+ # ===============================
+ 
+ # 1) Load minimal diagnosis table
+ hospital_dx <- get_min("hospital_diagnosis",
+                        c("hospitalization_id", "diagnosis_code")
+ ) %>%
+   mutate(diagnosis_code = toupper(trimws(diagnosis_code)))
+ 
+ # 2) Flag perioperative control codes: J95.82-.84
+ dx_periop <- hospital_dx %>%
+  mutate(periop_ctrl = grepl("^J95\\.(82|83|84)$", diagnosis_code)) %>%
+  group_by(hospitalization_id) %>%
+  summarize(dx_periop_ctrl = any(periop_ctrl, na.rm = TRUE), .groups = "drop")
 
+# 3) Join to your existing `flags` table and select controls
+# (Assumes you already built `flags` in your inclusion script)
+stopifnot(exists("flags"))
+
+flags_periop <- flags %>%
+  left_join(dx_periop, by = "hospitalization_id") %>%
+  mutate(
+    is_periop_ctrl = coalesce(dx_periop_ctrl, FALSE),
+    # Same base filters as your main cohort
+    include_periop =
+      coalesce(adult, FALSE) &
+      coalesce(icu_24h, FALSE) &
+      coalesce(has_demo, FALSE) &
+      coalesce(has_geo, FALSE) &
+      is_periop_ctrl &
+      !coalesce(arf_criterion_met, FALSE)  # explicitly exclude ARF
+  )
+
+# 4) Build a cohort with the SAME columns as `cohort_min`
+# If WINDOW_H isn't in scope (should be), default to 24h
+if (!exists("WINDOW_H")) WINDOW_H <- 24
+
+cohort_min_periop <- flags_periop %>%
+  filter(include_periop) %>%
+  transmute(
+    patient_id, hospitalization_id,
+    admission_dttm, discharge_dttm,
+    first_icu_in, last_icu_out,
+    icu_los_hours,
+    age_years, sex_category, race_category, ethnicity_category,
+    census_tract, county_code,
+    # ARF subtype flags mirror the main cohort schema; should all be FALSE by design
+    hypoxemic_arf   = coalesce(any_hypox, FALSE) & FALSE,
+    hypercapnic_arf = coalesce(any_hypercap, FALSE) & FALSE,
+    mixed_arf       = FALSE,
+    # window columns identical to main cohort
+    data_window_start = first_icu_in - lubridate::dhours(WINDOW_H),
+    data_window_end   = first_icu_in + lubridate::dhours(WINDOW_H),
+    # add an explicit control marker (extra column; remove if you want exact parity)
+    is_periop_control = TRUE
+  )
+
+# 5) Quick sanity print
+cat("Perioperative control cohort size: ", nrow(cohort_min_periop), "\n", sep = "")
+
+# 6) Save with your naming convention
+# (Assumes make_name(), SITE_NAME, SYSTEM_TIME, out_dir already exist; if not, define them)
+if (!exists("make_name")) {
+  sanitize_tag <- function(x) {
+    x <- if (is.null(x)) "SITE" else as.character(x)
+    x <- iconv(x, to = "ASCII//TRANSLIT")
+    x <- gsub("[^A-Za-z0-9]+", "_", x)
+    x <- gsub("^_+|_+$", "", x)
+    if (!nzchar(x)) "SITE" else x
+  }
+  SITE_NAME   <- sanitize_tag(if (exists("config")) config$site_name else Sys.getenv("SITE_NAME", "SITE"))
+  SYSTEM_TIME <- format(Sys.time(), "%Y%m%dT%H%M%S")
+  make_name   <- function(result_name, ext = NULL) {
+    base <- paste(result_name, SITE_NAME, SYSTEM_TIME, sep = "_")
+    if (is.null(ext)) base else paste0(base, ".", ext)
+  }
+  out_dir <- file.path("outputs", paste0("run_", SITE_NAME, "_", SYSTEM_TIME))
+  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+}
+
+readr::write_csv(
+  cohort_min_periop,
+  file.path(out_dir, make_name("cohort_inclusion_periop", "csv"))
+)
+message("Saved perioperative control cohort CSV: ",
+        file.path(out_dir, make_name("cohort_inclusion_periop", "csv")))
 
 
 

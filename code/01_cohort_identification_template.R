@@ -191,7 +191,7 @@ table_one_hospitalization <- clif_hospitalization_filtered %>%
   select(-patient_id, -hospitalization_id) %>%
   tbl_summary(by = ever_icu)
 
-table_one_hospitalization %>% 
-  as_gt() %>% 
-  gt::gtsave(filename = here(paste0("output/intermediate/Table_One_", Sys.Date(), "_", 
-                                    config$site_name, ".pdf")))
+# table_one_hospitalization %>% 
+#   as_gt() %>% 
+#   gt::gtsave(filename = here(paste0("output/intermediate/Table_One_", Sys.Date(), "_", 
+#                                     config$site_name, ".pdf")))

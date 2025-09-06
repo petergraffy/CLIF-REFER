@@ -8,6 +8,7 @@
 #   exclusions_raw           : raw file for spot checking exclusions
 #   selection_flow_counts    : flow counts for inclusion criteria
 #   2 figures                : selection and exclusions bar charts
+#   cohort_inclusion_periop  : control cohort of perioperative ARF
 # =================================================================================================
 
 # Load required libraries

@@ -579,6 +579,9 @@ cat("\nLoaded required CLIF tables: ", paste(names(clif_tables), collapse = ", "
  stopifnot(exists("cohort_min"))
  write_csv(cohort_min, file.path(out_dir, make_name("cohort_inclusion", "csv")))
  
+ message("Saved ARF cohort CSV: ",
+         file.path(out_dir, make_name("cohort_inclusion", "csv")))
+ 
  # ---------- 2) EXCLUSION BREAKDOWNS ----------
  stopifnot(exists("excluded_tbl"), exists("flags"))
  
@@ -591,6 +594,12 @@ cat("\nLoaded required CLIF tables: ", paste(names(clif_tables), collapse = ", "
  
  write_csv(excl_breakdown, file.path(out_dir, make_name("exclusion_breakdown", "csv")))
  write_csv(excluded_tbl,   file.path(out_dir, make_name("exclusions_raw", "csv")))
+ 
+ message("Saved exclusion breakdown CSV: ",
+         file.path(out_dir, make_name("exclusion_breakdown", "csv")))
+ 
+ message("Saved raw exclusions CSV: ",
+         file.path(out_dir, make_name("exclusions_raw", "csv")))
  
  # ---------- 3) SELECTION FLOW (counts table + PNG) ----------
  cand_n <- nrow(flags)
@@ -636,6 +645,9 @@ cat("\nLoaded required CLIF tables: ", paste(names(clif_tables), collapse = ", "
  
  ggsave(file.path(out_dir, make_name("selection_flow", "png")),
         plot = p_flow, width = 8, height = 5, dpi = 300)
+ 
+ message("Saved selection flowchart PNG: ",
+         file.path(out_dir, make_name("selection_flow", "png")))
  
  # ---------- 4) CONSORT-style flowchart ----------
 
@@ -744,6 +756,9 @@ cat("\nLoaded required CLIF tables: ", paste(names(clif_tables), collapse = ", "
  svg_txt <- DiagrammeRsvg::export_svg(gr2)
  writeLines(svg_txt, svg_path)
  rsvg::rsvg_png(svg_path, png_path, width = 1600, height = 1100)
+ 
+ message("Saved selection flowchart DOT/SVG/PNG: ",
+         file.path(out_dir, make_name("cohort_flow", "png")))
 
  # ===============================
  # Perioperative ARF Control Cohort

@@ -14,8 +14,7 @@
 # # Create binary and/or time/continuous versions as needed.
 # 
 # Link exposome
-# # ZIP→County crosswalk → county FIPS.
-# # Join county-year exposome: SVI, PM2.5, NO2, Daymet summaries (e.g., mean/max tmax, hot-day counts).
+# # Join county-year exposome: SVI, PM2.5, NO2, Daymet summaries
 # # Build an exposome index (z-score composite) and/or analyze components separately.
 # 
 # Model
@@ -35,6 +34,7 @@ library(MASS)   # glm.nb
 library(broom)
 library(patchwork)
 library(ggplot2)
+library(ggeffects)
 
 ## --- 1) Helpers --------------------------------------------------------------
 # Replace your helper with this:
@@ -806,5 +806,217 @@ combo <- (p1 | p2) / p3
 combo
 
 ggsave("no2_arfi_outcomes_combined.png", combo, width = 11, height = 9, dpi = 300)
+
+############### Hypercapnic vs hypoxemic vs mixed arf differences
+
+arf_exp <- arf_exp %>%
+  left_join(
+    cohort_min %>%
+      dplyr::select(patient_id, hospitalization_id,
+             hypoxemic_arf, hypercapnic_arf, mixed_arf),
+    by = c("patient_id","hospitalization_id")
+  )
+
+arf_exp <- arf_exp %>%
+  mutate(
+    arf_subtype = case_when(
+      mixed_arf == 1 ~ "Mixed",
+      hypoxemic_arf == 1 ~ "Hypoxemic",
+      hypercapnic_arf == 1 ~ "Hypercapnic",
+      TRUE ~ "Other"   # catch-all, if some records are missing flags
+    ),
+    arf_subtype = factor(arf_subtype,
+                         levels = c("Hypoxemic","Hypercapnic","Mixed","Other"))
+  )
+
+fit_mort_sub <- glm(
+  in_hosp_death ~ pm25_mean + no2_mean * arf_subtype + age +
+    sex_category + race_ethnicity_simple + svi_overall,
+  data = arf_exp,
+  family = binomial()
+)
+
+summary(fit_mort_sub)
+
+# Extract odds ratios per subtype
+broom::tidy(fit_mort_sub, exponentiate = TRUE, conf.int = TRUE)
+
+
+fit_vent_sub <- glm.nb(
+  vent_hours ~ pm25_mean + no2_mean * arf_subtype + age +
+    sex_category + race_ethnicity_simple + svi_overall,
+  data = arf_exp
+)
+
+broom::tidy(fit_vent_sub, exponentiate = TRUE, conf.int = TRUE)
+
+# Predicted curves for NO2 × subtype
+gge_mort <- ggpredict(fit_mort_sub, terms = c("no2_mean [all]", "arf_subtype"))
+gge_vent <- ggpredict(fit_vent_sub, terms = c("no2_mean [all]", "arf_subtype"))
+
+plot(gge_mort) + labs(title="In-hospital mortality by NO₂ across ARF subtypes")
+plot(gge_vent) + labs(title="Ventilation hours by NO₂ across ARF subtypes")
+
+
+arf_exp <- arf_exp %>%
+  mutate(
+    no2_10   = no2_mean / 10,
+    pm25_mean = as.numeric(pm25_mean),
+    no2_mean  = as.numeric(no2_mean),
+    age       = as.numeric(age)
+  )
+
+# Make sure subtype and covariates are factors
+arf_exp <- arf_exp %>%
+  mutate(
+    arf_subtype = droplevels(factor(arf_subtype,
+                                    levels = c("Hypoxemic","Hypercapnic","Mixed","Other"))),
+    sex_category = droplevels(factor(sex_category)),
+    race_ethnicity_simple = droplevels(factor(race_ethnicity_simple))
+  )
+
+# Choose reference levels (or set explicitly if you prefer)
+ref_sex <- arf_exp %>% count(sex_category, sort = TRUE) %>% slice(1) %>% pull(sex_category)
+ref_re  <- arf_exp %>% count(race_ethnicity_simple, sort = TRUE) %>% slice(1) %>% pull(race_ethnicity_simple)
+
+# -------------------- Models (NO2 × subtype) --------------------
+fit_mort_inhosp <- glm(
+  in_hosp_death ~ pm25_mean + no2_10 * arf_subtype + age + sex_category +
+    race_ethnicity_simple + svi_overall,
+  data = arf_exp, family = binomial()
+)
+
+fit_mort_30d <- glm(
+  death_30d ~ pm25_mean + no2_10 * arf_subtype + age + sex_category +
+    race_ethnicity_simple + svi_overall,
+  data = arf_exp, family = binomial()
+)
+
+fit_vent_nb <- glm.nb(
+  vent_hours ~ pm25_mean + no2_10 * arf_subtype + age + sex_category +
+    race_ethnicity_simple + svi_overall,
+  data = arf_exp
+)
+
+# -------------------- Prediction grid --------------------
+make_grid <- function(df, n = 150) {
+  rng <- df %>% summarize(lo = quantile(no2_10, 0.01, na.rm = TRUE),
+                          hi = quantile(no2_10, 0.99, na.rm = TRUE))
+  expand.grid(
+    no2_10 = seq(rng$lo, rng$hi, length.out = n),
+    arf_subtype = levels(df$arf_subtype)
+  ) %>%
+    as_tibble() %>%
+    mutate(
+      pm25_mean = mean(df$pm25_mean, na.rm = TRUE),
+      age = mean(df$age, na.rm = TRUE),
+      sex_category = ref_sex,
+      race_ethnicity_simple = ref_re,
+      svi_overall = mean(df$svi_overall, na.rm = TRUE)
+    )
+}
+grid <- make_grid(arf_exp)
+
+# -------------------- Predict with 95% CIs --------------------
+pred_ci_logistic <- function(fit, newdata) {
+  pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+  newdata %>%
+    mutate(
+      link = pr$fit, se = pr$se.fit,
+      pred = plogis(link),
+      lo   = plogis(link - 1.96 * se),
+      hi   = plogis(link + 1.96 * se)
+    )
+}
+
+pred_ci_negbin <- function(fit, newdata) {
+  pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+  newdata %>%
+    mutate(
+      link = pr$fit, se = pr$se.fit,
+      pred = exp(link),
+      lo   = exp(link - 1.96 * se),
+      hi   = exp(link + 1.96 * se)
+    )
+}
+
+df_mort_inhosp <- pred_ci_logistic(fit_mort_inhosp, grid)
+df_mort_30d    <- pred_ci_logistic(fit_mort_30d,    grid)
+df_vent        <- pred_ci_negbin (fit_vent_nb,      grid)
+
+# -------------------- Theme & palette --------------------
+theme_pub <- theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold")
+  )
+
+pal <- scale_color_brewer(palette = "Dark2")
+fill_pal <- scale_fill_brewer(palette = "Dark2")
+
+# -------------------- Plots --------------------
+p1 <- ggplot(df_mort_inhosp,
+             aes(x = no2_10, y = pred, color = arf_subtype, fill = arf_subtype)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.20, color = NA) +
+  geom_line(size = 1.2) +
+  pal + fill_pal +
+  labs(
+    title = "In-hospital mortality vs NO2 (per 10 ppb) \nby ARF subtype",
+    x = "NO2 (per 10 ppb increase)",
+    y = "Predicted probability",
+    color = "ARF subtype", fill = "ARF subtype",
+    subtitle = paste("Adjusted for PM2.5, age, sex, race/ethnicity, SVI; \nrefs:",
+                     ref_sex, "/", ref_re)
+  ) +
+  theme_pub
+
+p2 <- ggplot(df_mort_30d,
+             aes(x = no2_10, y = pred, color = arf_subtype, fill = arf_subtype)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.20, color = NA) +
+  geom_line(size = 1.2) +
+  pal + fill_pal +
+  labs(
+    title = "30-day mortality vs NO2 (per 10 ppb) \nby ARF subtype",
+    x = "NO2 (per 10 ppb increase)",
+    y = "Predicted probability",
+    color = "ARF subtype", fill = "ARF subtype",
+    subtitle = paste("Adjusted for PM2.5, age, sex, race/ethnicity, SVI; \nrefs:",
+                     ref_sex, "/", ref_re)
+  ) +
+  theme_pub
+
+p3 <- ggplot(df_vent,
+             aes(x = no2_10, y = pred, color = arf_subtype, fill = arf_subtype)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.20, color = NA) +
+  geom_line(size = 1.2) +
+  pal + fill_pal +
+  labs(
+    title = "Invasive ventilation hours vs NO2 (per 10 ppb) \nby ARF subtype",
+    x = "NO2 (per 10 ppb increase)",
+    y = "Predicted mean hours",
+    color = "ARF subtype", fill = "ARF subtype",
+    subtitle = paste("Negative binomial; adjusted for PM2.5, age, sex, race/ethnicity, SVI; \nrefs:",
+                     ref_sex, "/", ref_re)
+  ) +
+  theme_pub
+
+# -------------------- Combine & export --------------------
+combined <- (p1 | p2) / p3 + plot_layout(guides = "collect") & theme(legend.position = "bottom")
+combined
+
+ ggsave("fig_no2_by_subtype_combined.png", combined, width = 12, height = 9, dpi = 300)
+ ggsave("fig_no2_by_subtype_combined.pdf", combined, width = 12, height = 9)
+
+
+
+
+
+
+
+
+
 
 

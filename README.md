@@ -123,8 +123,6 @@ Failure in Adults. in StatPearls (StatPearls Publishing, Treasure Island
 
 Follow instructions in the [config/README.md](config/README.md) file for detailed configuration steps.
 
-**Note: if using the `01_run_cohort_id_app.R` file, this step is not necessary as the app will create the config file for the user**
-
 ## 2. Set up the project environment
 
 Initialize the R environment. Run `00_renv_restore.R` in the [code](code/templates/R) to set up the project environment.

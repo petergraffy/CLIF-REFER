@@ -1,4 +1,4 @@
-# Environmental and Clinical Determinants of Acute Respiratory Failure Trajectories in ICU Patients
+# REspiratory Failure Environmental Risk (REFER) in ICU Patients
 
 ## CLIF VERSION
 
@@ -127,28 +127,11 @@ Follow instructions in the [config/README.md](config/README.md) file for detaile
 
 ## 2. Set up the project environment
 
-*Describe the steps to setup the project environment.*
+Initialize the R environment. Run `00_renv_restore.R` in the [code](code/templates/R) to set up the project environment.
 
-Example for R: Run `00_renv_restore.R` in the [code](code/templates/R) to set up the project environment
-
-Example for Python: Open your terminal and run the following commands:
-
-```         
-python3 -m venv .mobilization
-source .mobilization/bin/activate
-pip install -r requirements.txt 
-```
+Unzip the `acs_estimates.csv.zip` file in the exposome folder and save it there.
 
 ## 3. Run code
 
 Detailed instructions on the code workflow are provided in the [code directory](code/README.md)
 
-## Example Repositories
-
--   [CLIF Adult Sepsis Events](https://github.com/08wparker/CLIF_sepsis) for R
-
--   [CLIF Eligibility for mobilization](https://github.com/kaveriC/CLIF-eligibility-for-mobilization) for Python
-
--   
-
-    ## [CLIF Variation in Ventilation](https://github.com/ingra107/clif_vent_variation)

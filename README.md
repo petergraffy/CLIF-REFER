@@ -9,7 +9,7 @@
 To determine clinical and non-clinical factors, including environmental
 exposures such as chronic air pollution and heat vulnerability, that are
 associated with the onset and outcomes of acute respiratory failure in
-ICU patients in Chicago.
+ICU patients across the US.
 
 ## Required CLIF tables and fields
 

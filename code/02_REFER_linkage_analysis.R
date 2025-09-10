@@ -25,7 +25,7 @@ suppressPackageStartupMessages({
 keep_vars <- c("clif_tables", "cohort_min", "cohort_min_periop")
 rm(list = setdiff(ls(envir = .GlobalEnv), keep_vars), envir = .GlobalEnv)
 
-#setwd("~/Desktop/Peter/Postdoc/CLIF-ARFVI") <------ set your working directory here if needed
+#setwd("~/CLIF-ARFVI") <------ set your working directory to the main folder path here if needed
 
 # ------------------------------- 0) Config & Setup --------------------------------
 # Expect: utils/config.R defines a list named `config`

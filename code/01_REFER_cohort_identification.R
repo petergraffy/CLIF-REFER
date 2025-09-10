@@ -176,7 +176,7 @@ cat("\nLoaded required CLIF tables: ", paste(names(clif_tables), collapse = ", "
    out <- out %>% rename_with(tolower)
    # keep only needed columns that exist
    cols_keep <- intersect(tolower(cols), names(out))
-   out %>% select(any_of(cols_keep))
+   out %>% dplyr::select(any_of(cols_keep))
  }
  
  patient <- get_min("patient",
@@ -265,7 +265,7 @@ cat("\nLoaded required CLIF tables: ", paste(names(clif_tables), collapse = ", "
           first_icu_in >= START_DATE,
           first_icu_in <= END_DATE) %>%
    # Adults: prefer age_at_admission, fallback to birth_date
-   left_join(patient %>% select(patient_id, birth_date, sex_category, race_category, ethnicity_category),
+   left_join(patient %>% dplyr::select(patient_id, birth_date, sex_category, race_category, ethnicity_category),
              by = "patient_id") %>%
    mutate(
      age_years = coalesce(
@@ -301,18 +301,18 @@ cat("\nLoaded required CLIF tables: ", paste(names(clif_tables), collapse = ", "
    filter(vital_category == "spo2") %>%
    inner_join(win, by = "hospitalization_id") %>%
    filter(recorded_dttm >= win_start, recorded_dttm <= win_end) %>%
-   select(hospitalization_id, recorded_dttm, spo2 = vital_value)
+   dplyr::select(hospitalization_id, recorded_dttm, spo2 = vital_value)
  
  labs_win <- labs %>%
    filter(lab_category %in% c("po2_arterial","pco2_arterial","ph_arterial")) %>%
    inner_join(win, by = "hospitalization_id") %>%
    filter(lab_result_dttm >= win_start, lab_result_dttm <= win_end) %>%
-   select(hospitalization_id, lab_result_dttm, lab_category, val = lab_value_numeric)
+   dplyr::select(hospitalization_id, lab_result_dttm, lab_category, val = lab_value_numeric)
  
  fio2_win <- resp_support %>%
    inner_join(win, by = "hospitalization_id") %>%
    filter(recorded_dttm >= win_start, recorded_dttm <= win_end) %>%
-   select(hospitalization_id, recorded_dttm, fio2_set)
+   dplyr::select(hospitalization_id, recorded_dttm, fio2_set)
  
  # ----------------------------
  # Pair SpO2 & PaO2 to FiO2 to assess room air / P/F
@@ -441,7 +441,7 @@ cat("\nLoaded required CLIF tables: ", paste(names(clif_tables), collapse = ", "
    mutate(has_cont_spo2 = n_spo2 >= N_SPO2_MIN)
  
  data_avail <- base %>%
-   select(hospitalization_id) %>%
+   dplyr::select(hospitalization_id) %>%
    left_join(abg_avail, by = "hospitalization_id") %>%
    left_join(spo2_density, by = "hospitalization_id") %>%
    mutate(
@@ -473,7 +473,7 @@ cat("\nLoaded required CLIF tables: ", paste(names(clif_tables), collapse = ", "
    left_join(hypox_roomair_po2, by = "hospitalization_id") %>%
    left_join(hypox_pf,          by = "hospitalization_id") %>%
    left_join(hyper_flags,       by = "hospitalization_id") %>%
-   left_join(data_avail %>% select(hospitalization_id, meets_data_rule), by = "hospitalization_id") %>%
+   left_join(data_avail %>% dplyr::select(hospitalization_id, meets_data_rule), by = "hospitalization_id") %>%
    mutate(
      any_hypox = coalesce(any_spo2_roomair_hit, FALSE) |
        coalesce(any_po2_roomair_hit, FALSE) |
@@ -529,7 +529,7 @@ cat("\nLoaded required CLIF tables: ", paste(names(clif_tables), collapse = ", "
      !arf_criterion_met ~ "No ARF criteria in ±24h",
      TRUE ~ "Other"
    )) %>%
-   select(patient_id, hospitalization_id, reason)
+   dplyr::select(patient_id, hospitalization_id, reason)
  
  excluded_tbl <- exclusion_reasons
  

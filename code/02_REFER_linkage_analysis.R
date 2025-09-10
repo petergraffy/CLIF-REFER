@@ -1,7 +1,7 @@
 # ===============================================================================================
 # ICU Respiratory Failure Environmental Risk (REFER) Index
 # PI: Peter Graffy (graffy@uchicago.edu)
-# Script: 01_build_refer.R
+# Run this script after running: 01_REFER_cohort_identification.R
 # Purpose: Build cohorts, history, outcomes; link exposome; fit models; save outputs consistently
 # ===============================================================================================
 
@@ -15,7 +15,10 @@ suppressPackageStartupMessages({
   library(patchwork)
   library(ggplot2)
   library(ggeffects)
-  library(yaml)
+  library(gt)
+  library(purrr)
+  library(stringr)
+  library(rlang)
 })
 
 # ---- 0.1 Load config (YAML or fallback defaults) ----------------------------------------------
@@ -313,7 +316,7 @@ vaso_flag <- med_admin |>
 
 # Assemble outcomes
 outcomes <- cohort_all |>
-  dplyr::select(patient_id, hospitalization_id, cohort, index_admit, index_discharge, index_year, county_code) |>
+  dplyr::select(patient_id, hospitalization_id, cohort, index_admit, index_discharge, index_year, census_tract, county_code) |>
   left_join(icu_los,  by = "hospitalization_id") |>
   left_join(hosp_los, by = "hospitalization_id") |>
   left_join(mortality_instay, by = "hospitalization_id") |>
@@ -331,18 +334,43 @@ outcomes <- outcomes |>
   mutate(fips_county = str_pad(as.character(county_code.x), width = 5, pad = "0"),
          GEOID = fips_county)
 
-svi    <- readr::read_csv("SVI_county_year.csv")
-pm25   <- readr::read_csv("pm25_county_year.csv")
-no2    <- readr::read_csv("no2_county_year.csv")
-daymet <- readr::read_csv("daymet_county_year_allvars.csv")
+svi    <- readr::read_csv("exposome/SVI_county_year.csv")
+pm25   <- readr::read_csv("exposome/pm25_county_year.csv")
+no2    <- readr::read_csv("exposome/no2_county_year.csv")
+daymet <- readr::read_csv("exposome/daymet_county_year_allvars.csv")
 
 exposome <- svi |>
   left_join(pm25,   by = c("GEOID","year")) |>
   left_join(no2,    by = c("GEOID","year")) |>
   left_join(daymet, by = c("GEOID","year"))
 
+# --- NEW: add tract-level ACS ----------------------------------------------
+acs <- readr::read_csv("exposome/acs_estimates.csv") |>
+  # keep only the columns you need and standardize types
+  transmute(
+    year  = as.integer(year),
+    geoid = str_pad(as.character(geoid), width = 11, pad = "0"),
+    median_income,
+    pov_rate_pct,
+    pct_lt_hs,
+    unemp_rate_pct,
+    pct_insured
+  ) |>
+  distinct(geoid, year, .keep_all = TRUE)
+
+# Sanity: ensure year for linkage is integer
+outcomes <- outcomes |>
+  mutate(index_year = as.integer(index_year))
+
 outcomes_exp <- outcomes |>
-  left_join(exposome, by = c("GEOID","index_year" = "year"))
+  left_join(exposome, by = c("county_code.x" = "GEOID","index_year" = "year"))
+
+# Join tract ACS (adds 4 vars with acs_ prefix)
+outcomes_exp <- outcomes_exp |>
+  left_join(
+    acs |> rename_with(~ paste0("acs_", .x), -c(geoid, year)),
+    by = c("census_tract" = "geoid", "index_year" = "year")
+  )
 
 #save_tbl(outcomes_exp, "outcomes_exposome")
 
@@ -384,34 +412,62 @@ save_tbl(arf_exp, "arf_exp")
 
 # ------------------------------------ 7) Models (Adjusted) --------------------------------------
 # Helper to tidy-save any model
-tidy_and_save <- function(fit, name, exponentiate = FALSE) {
+tidy_and_save <- function(fit, name, exponentiate = FALSE, folder = "models") {
+  # Tidy with CIs
   tt <- broom::tidy(fit, exponentiate = exponentiate, conf.int = TRUE)
-  save_tbl(tt, paste0("model_tidy_", name))
+  
+  # Safe file-name sanitizer: allow letters, numbers, underscore, hyphen
+  sanitize_filename <- function(x) {
+    x <- gsub("[^[:alnum:]_-]+", "_", x)   # hyphen at end of class = literal hyphen
+    x <- gsub("_+", "_", x)                # collapse repeats
+    x <- gsub("^_+|_+$", "", x)            # trim edges
+    tolower(x)
+  }
+  clean_name <- sanitize_filename(name)
+  
+  # Ensure subfolder exists: output/models
+  out_dir <- file.path("output", folder)
+  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  
+  # Preferred: use save_tbl with a subpath (if your helper supports it)
+  out_stem <- file.path(folder, site_name, paste0("model_tidy_", clean_name))
+  ok <- TRUE
+  tryCatch(
+    save_tbl(tt, out_stem),
+    error = function(e) { ok <<- FALSE }
+  )
+  
+  # Fallback: write directly if save_tbl() doesn't accept subpaths
+  if (!ok) {
+    readr::write_csv(tt, file.path(out_dir, paste0("model_tidy_", clean_name, ".csv")))
+  }
+  
   tt
 }
 
+
 # Logistic: in-hospital death
-fit_mort_adj <- glm(in_hosp_death ~ pm25_mean + no2_mean + age + sex_category + race_ethnicity_simple + svi_overall,
+fit_mort_adj <- glm(in_hosp_death ~ pm25_mean + no2_mean + age + sex_category + race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
                     data = arf_exp, family = binomial())
 tt_mort <- tidy_and_save(fit_mort_adj, "inhosp_death_adj", exponentiate = TRUE)
 
 # Logistic: 30-day death
-fit_mort30_adj <- glm(death_30d ~ pm25_mean + no2_mean + age + sex_category + race_ethnicity_simple + svi_overall,
+fit_mort30_adj <- glm(death_30d ~ pm25_mean + no2_mean + age + sex_category + race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
                       data = arf_exp, family = binomial())
 tt_mort30 <- tidy_and_save(fit_mort30_adj, "death30d_adj", exponentiate = TRUE)
 
 # NegBin: ICU LOS
-fit_icu_nb <- glm.nb(icu_los_days ~ pm25_mean + no2_mean + age + sex_category + race_ethnicity_simple + svi_overall,
+fit_icu_nb <- glm.nb(icu_los_days ~ pm25_mean + no2_mean + age + sex_category + race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
                      data = arf_exp)
 tt_icu <- tidy_and_save(fit_icu_nb, "icu_los_adj", exponentiate = TRUE)
 
 # NegBin: Vent hours
-fit_vent_nb <- glm.nb(vent_hours ~ pm25_mean + no2_mean + age + sex_category + race_ethnicity_simple + svi_overall,
+fit_vent_nb <- glm.nb(vent_hours ~ pm25_mean + no2_mean + age + sex_category + race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
                       data = arf_exp)
 tt_vent <- tidy_and_save(fit_vent_nb, "vent_hours_adj", exponentiate = TRUE)
 
 # Optional: AKI & vaso (logistic)
-fit_aki  <- glm(aki_flag  ~ pm25_mean + no2_mean + age + sex_category + race_ethnicity_simple + svi_overall,
+fit_aki  <- glm(aki_flag  ~ pm25_mean + no2_mean + age + sex_category + race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
                 data = arf_exp, family = binomial())
 
 tidy_and_save(fit_aki,  "aki_adj",  exponentiate = TRUE)
@@ -430,7 +486,12 @@ make_grid <- function(df, n = 100) {
     age = mean(df$age, na.rm = TRUE),
     sex_category = ref_sex,
     race_ethnicity_simple = ref_re,
-    svi_overall = mean(df$svi_overall, na.rm = TRUE)
+    svi_overall = mean(df$svi_overall, na.rm = TRUE),
+    # NEW tract-level ACS covariates
+    acs_median_income   = mean(df$acs_median_income, na.rm = TRUE),
+    acs_pct_lt_hs       = mean(df$acs_pct_lt_hs, na.rm = TRUE),
+    acs_unemp_rate_pct  = mean(df$acs_unemp_rate_pct, na.rm = TRUE),
+    acs_pct_insured     = mean(df$acs_pct_insured, na.rm = TRUE),
   ) %>% mutate(no2_10 = no2_mean / 10)
 }
 grid <- make_grid(arf_exp)
@@ -496,11 +557,11 @@ arf_exp <- arf_exp |>
     no2_10 = no2_mean/10
   )
 
-fit_mort_inhosp_sub <- glm(in_hosp_death ~ pm25_mean + no2_10 * arf_subtype + age + sex_category + race_ethnicity_simple + svi_overall,
+fit_mort_inhosp_sub <- glm(in_hosp_death ~ pm25_mean + no2_10 * arf_subtype + age + sex_category + race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
                            data = arf_exp, family = binomial())
-fit_mort_30d_sub    <- glm(death_30d     ~ pm25_mean + no2_10 * arf_subtype + age + sex_category + race_ethnicity_simple + svi_overall,
+fit_mort_30d_sub    <- glm(death_30d     ~ pm25_mean + no2_10 * arf_subtype + age + sex_category + race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
                            data = arf_exp, family = binomial())
-fit_vent_nb_sub     <- glm.nb(vent_hours  ~ pm25_mean + no2_10 * arf_subtype + age + sex_category + race_ethnicity_simple + svi_overall,
+fit_vent_nb_sub     <- glm.nb(vent_hours  ~ pm25_mean + no2_10 * arf_subtype + age + sex_category + race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
                               data = arf_exp)
 
 tidy_and_save(fit_mort_inhosp_sub, "inhosp_death_x_subtype", exponentiate = TRUE)
@@ -519,7 +580,12 @@ make_grid_sub <- function(df, n = 150) {
       age = mean(df$age, na.rm = TRUE),
       sex_category = ref_sex,
       race_ethnicity_simple = ref_re,
-      svi_overall = mean(df$svi_overall, na.rm = TRUE)
+      svi_overall = mean(df$svi_overall, na.rm = TRUE),
+      # NEW tract-level ACS covariates
+      acs_median_income   = mean(df$acs_median_income, na.rm = TRUE),
+      acs_pct_lt_hs       = mean(df$acs_pct_lt_hs, na.rm = TRUE),
+      acs_unemp_rate_pct  = mean(df$acs_unemp_rate_pct, na.rm = TRUE),
+      acs_pct_insured     = mean(df$acs_pct_insured, na.rm = TRUE),
     )
 }
 grid_sub <- make_grid_sub(arf_exp)
@@ -544,19 +610,19 @@ arf_exp <- arf_exp %>%
 # --- Fit interaction models (NO2 per 10 ppb already in no2_10) ---
 fit_mort_inhosp_sub <- glm(
   in_hosp_death ~ pm25_mean + no2_10 * arf_subtype + age + sex_category +
-    race_ethnicity_simple + svi_overall,
+    race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
   data = arf_exp, family = binomial()
 )
 
 fit_mort_30d_sub <- glm(
   death_30d ~ pm25_mean + no2_10 * arf_subtype + age + sex_category +
-    race_ethnicity_simple + svi_overall,
+    race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
   data = arf_exp, family = binomial()
 )
 
 fit_vent_nb_sub <- MASS::glm.nb(
   vent_hours ~ pm25_mean + no2_10 * arf_subtype + age + sex_category +
-    race_ethnicity_simple + svi_overall,
+    race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
   data = arf_exp
 )
 
@@ -564,9 +630,23 @@ fit_vent_nb_sub <- MASS::glm.nb(
 arf_lvls <- fit_mort_inhosp_sub$xlevels$arf_subtype  # training levels used by model
 
 make_grid_sub_safe <- function(df, arf_lvls, n = 150) {
+  # helpers
+  safe_mean <- function(x) {
+    m <- mean(x, na.rm = TRUE)
+    if (is.nan(m)) NA_real_ else m
+  }
+  top_level <- function(x) {
+    if (is.factor(x)) x <- droplevels(x)
+    tab <- sort(table(x), decreasing = TRUE)
+    if (length(tab) == 0) NA_character_ else names(tab)[1]
+  }
+
   rng <- df %>%
-    dplyr::summarize(lo = stats::quantile(no2_10, 0.01, na.rm = TRUE),
-                     hi = stats::quantile(no2_10, 0.99, na.rm = TRUE))
+    dplyr::summarize(
+      lo = stats::quantile(no2_10, 0.01, na.rm = TRUE),
+      hi = stats::quantile(no2_10, 0.99, na.rm = TRUE)
+    )
+
   expand.grid(
     no2_10 = seq(rng$lo, rng$hi, length.out = n),
     arf_subtype = arf_lvls,
@@ -574,12 +654,19 @@ make_grid_sub_safe <- function(df, arf_lvls, n = 150) {
   ) %>%
     dplyr::as_tibble() %>%
     dplyr::mutate(
-      pm25_mean = mean(df$pm25_mean, na.rm = TRUE),
-      age = mean(df$age, na.rm = TRUE),
-      sex_category = names(sort(table(df$sex_category), decreasing = TRUE))[1],
-      race_ethnicity_simple = names(sort(table(df$race_ethnicity_simple), decreasing = TRUE))[1],
-      svi_overall = mean(df$svi_overall, na.rm = TRUE),
-      # coerce to the model's factor levels
+      pm25_mean             = safe_mean(df$pm25_mean),
+      age                   = safe_mean(df$age),
+      sex_category          = top_level(df$sex_category),
+      race_ethnicity_simple = top_level(df$race_ethnicity_simple),
+      svi_overall           = safe_mean(df$svi_overall),
+
+      # NEW tract-level ACS covariates
+      acs_median_income   = safe_mean(df$acs_median_income),
+      acs_pct_lt_hs       = safe_mean(df$acs_pct_lt_hs),
+      acs_unemp_rate_pct  = safe_mean(df$acs_unemp_rate_pct),
+      acs_pct_insured     = safe_mean(df$acs_pct_insured),
+
+      # coerce to model's factor levels
       arf_subtype = factor(arf_subtype, levels = arf_lvls),
       sex_category = factor(sex_category, levels = levels(df$sex_category)),
       race_ethnicity_simple = factor(race_ethnicity_simple, levels = levels(df$race_ethnicity_simple))
@@ -657,6 +744,144 @@ arf_strat <- outcomes_exp %>%
             mort_30d    = mean(death_30d, na.rm = TRUE),
             mean_ICU_los= mean(icu_los_days, na.rm = TRUE), .groups = "drop")
 save_tbl(arf_strat, "arf_strat")
+
+
+# ------------- 1) Variable catalog & labels (edit as needed) --------------------
+tbl1_vars <- list(
+  cont = c(
+    age              = "Age (years)",
+    pm25_mean        = "PM2.5 (annual mean, μg/m³)",
+    no2_mean         = "NO₂ (annual mean, ppb)",
+    svi_overall      = "SVI (overall)",
+    icu_los_days     = "ICU length of stay (days)",
+    hosp_los_days    = "Hospital length of stay (days)",
+    vent_hours       = "Invasive ventilation (hours)"
+  ),
+  cat = c(
+    sex_category            = "Sex",
+    race_ethnicity_simple   = "Race/Ethnicity",
+    in_hosp_death           = "In-hospital death",
+    death_30d               = "30-day death",
+    vaso_flag               = "Vasopressor use",
+    aki_flag                = "AKI"
+  )
+)
+
+# Include optional history features if present
+opt_hist <- c("prior_icu_stays","any_acei_arb","any_diuretic","any_bb")
+opt_hist_present <- intersect(opt_hist, names(arf_exp))
+if ("prior_icu_stays" %in% opt_hist_present) {
+  tbl1_vars$cont <- c(tbl1_vars$cont, prior_icu_stays = "Prior ICU stays (count)")
+}
+bin_map <- c(any_acei_arb = "ACEi/ARB during lookback",
+             any_diuretic = "Diuretic during lookback",
+             any_bb       = "Beta-blocker during lookback")
+add_bins <- intersect(names(bin_map), opt_hist_present)
+if (length(add_bins)) {
+  tbl1_vars$cat <- c(tbl1_vars$cat, stats::setNames(as.list(bin_map[add_bins]), add_bins))
+}
+
+# ------------- 2) Clean factor levels for reproducible categories ---------------
+arf_exp_tbl <- arf_exp %>%
+  mutate(
+    sex_category = forcats::fct_explicit_na(sex_category, na_level = "(Missing)"),
+    race_ethnicity_simple = forcats::fct_explicit_na(race_ethnicity_simple, na_level = "(Missing)")
+  )
+
+# ------------- 3) Pretty Table 1 (gtsummary) -----------------------------------
+# Formatting for continuous & categorical
+# 0) Combine your label dictionaries into ONE named character vector
+all_labels <- c(tbl1_vars$cont, tbl1_vars$cat)  # named chr: var -> "Pretty Label"
+
+# 1) Build a pure list of formulas: var ~ "Pretty Label"
+labels_list <- lapply(names(all_labels), function(v) {
+  rlang::new_formula(rlang::sym(v), as.character(all_labels[[v]]))
+})
+# ensure there are no names on the outer list (gtsummary prefers an unnamed list of formulas)
+names(labels_list) <- NULL
+
+# 2) (Optional) sanity check: make sure all labeled vars exist in data you select
+vars_keep <- intersect(names(all_labels), names(arf_exp_tbl))
+
+# 3) Build Table 1
+tbl1 <- arf_exp_tbl %>%
+  dplyr::select(dplyr::any_of(vars_keep)) %>%
+  gtsummary::tbl_summary(
+    type = list(
+      gtsummary::all_continuous()  ~ "continuous",
+      gtsummary::all_categorical() ~ "categorical"
+    ),
+    statistic = c(
+      list(gtsummary::all_continuous()  ~ "{mean} ± {sd} ({median}; {p25}, {p75})"),
+      list(gtsummary::all_categorical() ~ "{n} ({p}%)")
+    ),
+    label   = labels_list,
+    missing = "ifany",
+    digits  = gtsummary::all_continuous() ~ 1
+  ) %>%
+  # gtsummary::add_overall(last = TRUE) %>%  # <- remove; no 'by' stratifier
+  gtsummary::bold_labels() %>%
+  gtsummary::modify_caption(
+    paste0("**Table 1. Baseline characteristics and outcomes — ARF cohort** (Site: ", site_name, ")")
+  )
+
+# Save (HTML + RTF) — convert with gtsummary::as_gt()
+tbl1_gt <- gtsummary::as_gt(tbl1)
+
+gt::gtsave(tbl1_gt, filename = file.path(cfg$output_dir, cfg$figures_dir,
+                                         paste0(cfg$prefix, "_table1_", cfg$run_id, ".html")))
+# If your gt version supports RTF (≥ 0.10.0 typically); otherwise skip:
+try(
+  gt::gtsave(tbl1_gt, filename = file.path(cfg$output_dir, cfg$figures_dir,
+                                           paste0(cfg$prefix, "_table1_", cfg$run_id, ".rtf"))),
+  silent = TRUE
+)
+
+# ------------- 4) Federated-friendly machine-readable export -------------------
+# We’ll export two tidy frames:
+#   A) continuous_stats: variable, n, mean, sd, q25, median, q75
+#   B) categorical_stats: variable, level, n, pct
+# This allows exact recomputation across nodes (pooled mean/SD, and summed counts).
+
+# A) Continuous
+continuous_vars <- intersect(names(tbl1_vars$cont), names(arf_exp_tbl))
+continuous_stats <- map_dfr(continuous_vars, function(v) {
+  x <- arf_exp_tbl[[v]]
+  x <- x[is.finite(as.numeric(x))]  # drop NA / non-numeric safely
+  tibble(
+    site      = site_name,
+    variable  = v,
+    label     = unname(tbl1_vars$cont[v]),
+    n         = length(x),
+    mean      = if (length(x)) mean(x, na.rm = TRUE) else NA_real_,
+    sd        = if (length(x)) stats::sd(x, na.rm = TRUE) else NA_real_,
+    q25       = if (length(x)) as.numeric(quantile(x, 0.25, na.rm = TRUE)) else NA_real_,
+    median    = if (length(x)) as.numeric(quantile(x, 0.50, na.rm = TRUE)) else NA_real_,
+    q75       = if (length(x)) as.numeric(quantile(x, 0.75, na.rm = TRUE)) else NA_real_
+  )
+})
+
+# B) Categorical (ensure factors)
+categorical_vars <- intersect(names(tbl1_vars$cat), names(arf_exp_tbl))
+categorical_stats <- map_dfr(categorical_vars, function(v) {
+  x <- arf_exp_tbl[[v]]
+  x_fac <- if (is.factor(x)) x else factor(x)
+  cnt <- as.data.frame(table(x_fac, useNA = "ifany"), stringsAsFactors = FALSE)
+  names(cnt) <- c("level", "n")
+  cnt %>%
+    mutate(
+      site     = site_name,
+      variable = v,
+      label    = unname(tbl1_vars$cat[v]),
+      total_n  = sum(n),
+      pct      = ifelse(total_n > 0, 100 * n / total_n, NA_real_)
+    ) %>%
+    dplyr::select(site, variable, label, level, n, pct, total_n)
+})
+
+# Save site-level tidy stats
+save_tbl(continuous_stats, "table1_continuous_site")
+save_tbl(categorical_stats, "table1_categorical_site")
 
 message("All done. Outputs written to: ", normalizePath(cfg$output_dir))
 

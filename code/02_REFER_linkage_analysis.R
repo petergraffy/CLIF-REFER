@@ -19,6 +19,11 @@ suppressPackageStartupMessages({
   library(purrr)
   library(stringr)
   library(rlang)
+  library(tidycensus)
+  library(fixest)
+  library(marginaleffects)
+  library(pscl)
+  library(glmmTMB)
 })
 
 # ---- 0.1 Load config (YAML or fallback defaults) ----------------------------------------------
@@ -886,20 +891,365 @@ save_tbl(categorical_stats, "table1_categorical_site")
 message("All done. Outputs written to: ", normalizePath(cfg$output_dir))
 
 
+# =========================
+# A) ARF Incidence
+# =========================
 
 
+# 1. Estimate county-specific slope (no2_mean ~ year)
+no2_slopes <- no2 %>%
+  group_by(GEOID) %>%
+  do({
+    fit <- lm(no2_mean ~ year, data = .)
+    tibble(
+      slope = coef(fit)[["year"]],
+      intercept = coef(fit)[["(Intercept)"]]
+    )
+  })
+
+# 2. Predict 2018 from slope + intercept
+no2_2018 <- no2_slopes %>%
+  mutate(
+    year = 2018,
+    no2_mean = intercept + slope * 2018
+  ) %>%
+  dplyr::select(GEOID, year, no2_mean)
+
+# 3. Append backfilled 2018 to your original no2 dataset
+no2_complete <- no2 %>%
+  bind_rows(no2_2018) %>%
+  arrange(GEOID, year)
+
+years <- 2018:2024
+
+pop_data <- map_dfr(years, function(y) {
+  get_estimates(
+    geography = "county",
+    product = "population", 
+    year = y,
+    geometry = FALSE
+  ) %>%
+    mutate(year = y)
+})
+
+pops <- c("POP", "POPESTIMATE")
+
+pop_data_clean <- pop_data %>%
+  filter(variable %in% pops) %>%
+  dplyr::select(GEOID, NAME, year, population = value)
 
 
+arf_counts <- arf_exp %>%
+  mutate(year = year(index_admit)) %>% 
+  group_by(fips_county, year) %>%
+  summarise(arf_cases = n(), .groups = "drop")
 
+# --- 0) Ensure keys are consistent types/widths ---
+pop_data_clean <- pop_data_clean %>%
+  mutate(
+    GEOID = str_pad(as.character(GEOID), width = 5, side = "left", pad = "0"),
+    year  = as.integer(year)
+  )
 
+no2_complete <- no2_complete %>%
+  mutate(
+    GEOID = str_pad(as.character(GEOID), width = 5, side = "left", pad = "0"),
+    year  = as.integer(year)
+  )
 
+# If arf_exp has county as numeric or short FIPS, standardize to 5 digits
+# Replace `county_fips` and `admit_date` with the actual column names in arf_exp if different
+arf_counts <- arf_exp %>%
+  mutate(
+    GEOID = str_pad(as.character(fips_county), width = 5, side = "left", pad = "0"),
+    year  = year(index_admit)
+  ) %>%
+  group_by(GEOID, year) %>%
+  summarise(arf_cases = n(), .groups = "drop")
 
+# --- 1) (Optional) if there are duplicate NO2 rows per GEOID-year, collapse to mean ---
+no2_collapse <- no2_complete %>%
+  group_by(GEOID, year) %>%
+  summarise(no2_mean = mean(no2_mean, na.rm = TRUE), .groups = "drop")
 
+# --- 2) Build base panel with pop + NO2 (keep only county-years where both exist) ---
+base_panel <- pop_data_clean %>%
+  inner_join(no2_collapse, by = c("GEOID", "year"))
 
+# --- 3) Add ARF counts; fill missing with zeros (no observed cases that year) ---
+analysis_df <- base_panel %>%
+  left_join(arf_counts, by = c("GEOID", "year")) %>%
+  mutate(
+    arf_cases = coalesce(arf_cases, 0L)
+  )
 
+# --- 4) Restrict to target years (if desired) ---
+analysis_df <- analysis_df %>%
+  filter(year >= 2018, year <= 2024)
 
+# --- 5) Quick sanity checks ---
+# Any county-years missing pop or NO2? (should be none after inner_join)
+stopifnot(!any(is.na(analysis_df$population)))
+stopifnot(!any(is.na(analysis_df$no2_mean)))
 
+# Any ARF cases that didn't join to pop/NO2? (should be 0 after inner_join base)
+arf_unmatched <- arf_counts %>%
+  anti_join(base_panel, by = c("GEOID", "year"))
+if (nrow(arf_unmatched) > 0) {
+  message("Heads up: Some ARF counts had no matching pop+NO2 rows. Examples:")
+  print(head(arf_unmatched, 10))
+}
 
+# Peek
+dplyr::glimpse(analysis_df)
+dplyr::count(analysis_df, year)
+summary(analysis_df$arf_cases)
+
+# Output dir for figures
+fig_dir <- "output/figures"
+if (!dir.exists(fig_dir)) dir.create(fig_dir, recursive = TRUE)
+
+# -------------------------
+# Helper: save plots
+# -------------------------
+save_fig <- function(p, name, width = 7, height = 5, dpi = 320) {
+  ggsave(filename = file.path(fig_dir, name), plot = p,
+         width = width, height = height, dpi = dpi, device = ragg::agg_png)
+}
+
+# =========================
+# Data prep
+# Assumes: analysis_df has GEOID, NAME, year, population, no2_mean, arf_cases
+# =========================
+analysis_df <- analysis_df %>%
+  mutate(population = as.numeric(population),
+         log_pop    = log(population))
+
+stopifnot(all(is.finite(analysis_df$log_pop)))
+
+# =========================
+# A) Main model: FE Negative Binomial (NO2)
+# =========================
+fit_nb <- fenegbin(
+  arf_cases ~ no2_mean | GEOID + year,
+  data   = analysis_df,
+  offset = ~ log_pop
+)
+
+# Clustered SE table
+etable(fit_nb, se = "cluster", cluster = ~ GEOID)
+
+# IRR point estimate (per 1 ppb NO2)
+irr_no2 <- exp(coef(fit_nb)["no2_mean"])
+
+# Tidy + plot
+no2_res <- tidy(fit_nb, conf.int = TRUE, se.type = "cluster", cluster = ~ GEOID) %>%
+  filter(term == "no2_mean") %>%
+  transmute(term, IRR = exp(estimate),
+            IRR_low = exp(conf.low), IRR_high = exp(conf.high))
+
+p_nb_point <- ggplot(no2_res,
+                     aes(x = term, y = IRR, ymin = IRR_low, ymax = IRR_high)) +
+  geom_pointrange(color = "steelblue", linewidth = 1) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(title = expression("Incidence Rate Ratio for NO"[2]*" and ARF"),
+       x = NULL, y = "Incidence Rate Ratio (95% CI)") +
+  theme_minimal(base_size = 14)
+save_fig(p_nb_point, "irr_no2_nb.png")
+
+# =========================
+# B) Historic burden tertiles (descriptive + FE Poisson by stratum)
+# =========================
+# Long-term mean NO2 (2019+; keep if you included 2018 extrapolation)
+county_burden <- analysis_df %>%
+  filter(year >= 2019) %>%
+  group_by(GEOID) %>%
+  summarise(no2_historic_mean = mean(no2_mean, na.rm = TRUE), .groups = "drop") %>%
+  mutate(no2_tertile = ntile(no2_historic_mean, 3),
+         no2_tertile = factor(no2_tertile, levels = 1:3,
+                              labels = c("Low NO\u2082","Medium NO\u2082","High NO\u2082")))
+
+analysis_df2 <- analysis_df %>% left_join(county_burden, by = "GEOID")
+
+# Stratified FE Poisson (more stable than NB for interactions)
+fits_tertile <- analysis_df2 %>%
+  group_by(no2_tertile) %>%
+  group_map(~ fepois(arf_cases ~ no2_mean | GEOID + year, data = .x, offset = ~ log_pop))
+
+names(fits_tertile) <- levels(analysis_df2$no2_tertile)
+
+tidy_tertiles <- imap_dfr(fits_tertile, ~ tidy(.x, conf.int = TRUE,
+                                               se.type = "cluster", cluster = ~ GEOID) %>%
+                            filter(term == "no2_mean") %>%
+                            transmute(tertile = .y,
+                                      IRR = exp(estimate),
+                                      IRR_low = exp(conf.low),
+                                      IRR_high = exp(conf.high)))
+
+p_tertile_pts <- ggplot(tidy_tertiles,
+                        aes(x = tertile, y = IRR, ymin = IRR_low, ymax = IRR_high)) +
+  geom_pointrange(color = "steelblue", linewidth = 1.1) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(title = "Effect of NO\u2082 on ARF Incidence by County Burden Tertile",
+       x = "County NO\u2082 Burden Tertile", y = "Incidence Rate Ratio (95% CI)") +
+  theme_minimal(base_size = 14)
+save_fig(p_tertile_pts, "irr_no2_by_tertile.png")
+
+# =========================
+# C) Continuous interaction: NO2 × historic burden (FE Poisson)
+#   + Marginal effects curve (IRR per +10 ppb)
+# =========================
+fit_nb_interact <- fepois(
+  arf_cases ~ no2_mean * scale(no2_historic_mean) | GEOID + year,
+  data = analysis_df2,
+  offset = ~ log_pop
+)
+
+per <- 1
+
+# 1) Grid over the FULL observed range (no trimming)
+burden_grid_full <- seq(
+  min(analysis_df2$no2_historic_mean, na.rm = TRUE),
+  max(analysis_df2$no2_historic_mean, na.rm = TRUE),
+  length.out = 200
+)
+
+# 2) Coefs & clustered vcov (from fit_nb_interact)
+b <- coef(fit_nb_interact)
+V <- vcov(fit_nb_interact, cluster = ~ GEOID)
+
+b_no2 <- b[["no2_mean"]]
+b_int <- b[["no2_mean:scale(no2_historic_mean)"]]
+
+mu    <- mean(analysis_df2$no2_historic_mean, na.rm = TRUE)
+sdv   <- sd(analysis_df2$no2_historic_mean,   na.rm = TRUE)
+z     <- (burden_grid_full - mu) / sdv
+
+slope     <- as.numeric(b_no2 + b_int * z)
+var_slope <- V["no2_mean","no2_mean"] +
+  (z^2) * V["no2_mean:scale(no2_historic_mean)","no2_mean:scale(no2_historic_mean)"] +
+  2 * z * V["no2_mean","no2_mean:scale(no2_historic_mean)"]
+se_slope  <- sqrt(pmax(0, var_slope))
+
+curve_full <- tibble(
+  burden  = burden_grid_full,
+  IRR     = exp(slope * per),
+  IRR_low = exp(slope * per - 1.96 * se_slope * per),
+  IRR_high= exp(slope * per + 1.96 * se_slope * per)
+)
+
+# Tertile cut lines
+cuts <- quantile(analysis_df2$no2_historic_mean, c(1/3, 2/3), na.rm = TRUE)
+
+# 3) Plot: full range + log y-scale
+p_me_full <- ggplot(curve_full, aes(x = burden, y = IRR)) +
+  geom_hline(yintercept = 1, linetype = "dashed", linewidth = 0.6) +
+  geom_ribbon(aes(ymin = IRR_low, ymax = IRR_high), alpha = 0.15, linewidth = 0) +
+  geom_line(linewidth = 1.1) +
+  geom_vline(xintercept = cuts, linetype = "dotted", linewidth = 0.6) +
+  geom_rug(data = analysis_df2, aes(x = no2_historic_mean, y = NULL),
+           inherit.aes = FALSE, sides = "b", alpha = 0.25) +
+  scale_y_log10() +  # show entire spectrum cleanly
+  labs(
+    title    = expression("Marginal Effect of NO"[2]*" on ARF Incidence vs Historic NO"[2]*" Burden"),
+    subtitle = bquote("IRR per +"*.(per)*" ppb NO"[2]*"; county & year fixed effects, clustered SEs"),
+    x        = expression("Historic NO"[2]*" burden (county mean over study period)"),
+    y        = "Incidence Rate Ratio (log scale)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.title = element_text(face = "bold")
+  )
+
+save_fig(p_me_full, "marginal_effect_no2_by_burden_FULL.png", width = 9, height = 6)
+
+# =========================
+# D) Year-over-year (YOY) change models: lag 0/1/2
+# =========================
+analysis_df_lag <- analysis_df %>%
+  arrange(GEOID, year) %>%
+  group_by(GEOID) %>%
+  mutate(
+    no2_change      = no2_mean - lag(no2_mean),  # ΔNO2 (t-1 -> t)
+    no2_change_lag0 = no2_change,                # concurrent
+    no2_change_lag1 = lag(no2_change, 1),        # 1-year lag
+    no2_change_lag2 = lag(no2_change, 2)         # 2-year lag
+  ) %>%
+  ungroup()
+
+fit_lag0 <- fepois(arf_cases ~ no2_change_lag0 | GEOID + year, data = analysis_df_lag, offset = ~ log_pop)
+fit_lag1 <- fepois(arf_cases ~ no2_change_lag1 | GEOID + year, data = analysis_df_lag, offset = ~ log_pop)
+fit_lag2 <- fepois(arf_cases ~ no2_change_lag2 | GEOID + year, data = analysis_df_lag, offset = ~ log_pop)
+
+tidy_lags <- list(Lag0 = fit_lag0, Lag1 = fit_lag1, Lag2 = fit_lag2) %>%
+  imap_dfr(~ tidy(.x, conf.int = TRUE, se.type = "cluster", cluster = ~ GEOID) %>%
+             filter(term == paste0("no2_change_", tolower(.y))) %>%
+             transmute(Lag = .y,
+                       IRR = exp(estimate),
+                       IRR_low = exp(conf.low),
+                       IRR_high = exp(conf.high)))
+
+p_lags <- ggplot(tidy_lags, aes(x = Lag, y = IRR, ymin = IRR_low, ymax = IRR_high)) +
+  geom_pointrange(size = 1.1, color = "steelblue") +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(title = expression("Effect of Year-to-Year Change in NO"[2]*" on ARF Incidence"),
+       subtitle = "Comparing concurrent (Lag 0), 1-year lag, and 2-year lag effects",
+       x = "Lag (years)", y = "Incidence Rate Ratio (95% CI)") +
+  theme_minimal(base_size = 14)
+save_fig(p_lags, "lagged_delta_no2_effects.png")
+
+# =========================
+# E) PM2.5 models (level effects + side-by-side comparison)
+# =========================
+# Assumes data frame 'pm25' with GEOID, year, pm25_mean
+analysis_df_pm <- analysis_df %>% left_join(pm25, by = c("GEOID","year"))
+
+fit_no2_pois  <- fepois(arf_cases ~ no2_mean  | GEOID + year, data = analysis_df_pm, offset = ~ log_pop)
+fit_pm25_pois <- fepois(arf_cases ~ pm25_mean | GEOID + year, data = analysis_df_pm, offset = ~ log_pop)
+fit_both_pois <- fepois(arf_cases ~ no2_mean + pm25_mean | GEOID + year, data = analysis_df_pm, offset = ~ log_pop)
+
+etable(fit_no2_pois, fit_pm25_pois, fit_both_pois,
+       se = "cluster", cluster = ~ GEOID,
+       dict = c(no2_mean = "NO\u2082 (per 1 ppb)",
+                pm25_mean = "PM\u2082\u2022\u2085 (per 1 \u00B5g/m\u00B3)"))
+
+tidy_models <- list(NO2 = fit_no2_pois, PM25 = fit_pm25_pois, Both = fit_both_pois) %>%
+  imap_dfr(~ tidy(.x, conf.int = TRUE, se.type = "cluster", cluster = ~ GEOID) %>%
+             filter(term %in% c("no2_mean", "pm25_mean")) %>%
+             transmute(model = .y, term,
+                       IRR = exp(estimate),
+                       IRR_low = exp(conf.low),
+                       IRR_high = exp(conf.high)))
+
+p_side <- ggplot(tidy_models,
+                 aes(x = term, y = IRR, ymin = IRR_low, ymax = IRR_high, color = model)) +
+  geom_pointrange(position = position_dodge(width = 0.5), size = 1.1) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  scale_x_discrete(labels = c("no2_mean" = expression("NO"[2]),
+                              "pm25_mean" = expression("PM"[2.5]))) +
+  labs(title = "Pollutant Effects on ARF Incidence",
+       subtitle = "Fixed-effects Poisson models (county + year), clustered SEs",
+       x = "Pollutant", y = "Incidence Rate Ratio (95% CI)", color = "Model") +
+  theme_minimal(base_size = 14)
+save_fig(p_side, "pollutant_effects_side_by_side.png")
+
+# output folder
+out_dir <- "output/data"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+arf_counts_export <- analysis_df %>%
+  mutate(
+    GEOID = str_pad(as.character(GEOID), 5, side = "left", pad = "0"),
+    year = as.integer(year),
+    arf_cases = as.integer(arf_cases)
+  ) %>%
+  filter(year >= 2018, year <= 2024) %>%
+  dplyr::select(GEOID, dplyr::any_of("NAME"), year, arf_cases) %>%
+  arrange(GEOID, year)
+
+write_csv(arf_counts_export, file.path(out_dir, "arf_counts_by_county_year.csv"))
 
 
 

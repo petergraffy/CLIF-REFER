@@ -1251,6 +1251,12 @@ arf_counts_export <- analysis_df %>%
 
 write_csv(arf_counts_export, file.path(out_dir, "arf_counts_by_county_year.csv"))
 
+# =========================
+# Wrap up
+# =========================
+
+message("\n✅ All analyses and figures complete!")
+message("📂 Please delete the csv files with patient data and upload the 'output' folder (including figures, models, and data) to Box.\n")
 
 
 

@@ -24,6 +24,7 @@ suppressPackageStartupMessages({
   library(marginaleffects)
   library(pscl)
   library(glmmTMB)
+  library(digest)
 })
 
 # ---- 0.1 Load config (YAML or fallback defaults) ----------------------------------------------
@@ -725,6 +726,215 @@ p3s <- ggplot(df_vent_sub, aes(no2_10, pred, color = arf_subtype, fill = arf_sub
 combo_sub <- (p1s | p2s) / p3s + plot_layout(guides = "collect") & theme(legend.position = "bottom")
 save_plot(combo_sub, "no2_by_subtype_combined")
 
+# --- drop unused levels just once ---
+arf_exp <- arf_exp %>%
+  mutate(
+    arf_subtype = droplevels(arf_subtype),
+    sex_category = droplevels(sex_category),
+    race_ethnicity_simple = droplevels(race_ethnicity_simple)
+  )
+
+# Logistic: in-hospital and 30-day mortality
+fit_mort_inhosp_sex <- glm(
+  in_hosp_death ~ pm25_mean + no2_10*sex_category + arf_subtype + age +
+    race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp, family = binomial()
+)
+
+fit_mort_30d_sex <- glm(
+  death_30d ~ pm25_mean + no2_10*sex_category + arf_subtype + age +
+    race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp, family = binomial()
+)
+
+# Negative binomial: vent hours
+fit_vent_nb_sex <- MASS::glm.nb(
+  vent_hours ~ pm25_mean + no2_10*sex_category + arf_subtype + age +
+    race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp
+)
+
+# levels from fitted model to avoid new levels at predict-time
+sx_lvls  <- fit_mort_inhosp_sex$xlevels$sex_category
+sub_lvls <- fit_mort_inhosp_sex$xlevels$arf_subtype
+
+make_grid_sex <- function(df, sx_lvls, sub_lvls, n = 150) {
+  safe_mean <- function(x) { m <- mean(x, na.rm = TRUE); if (is.nan(m)) NA_real_ else m }
+  top_level <- function(x) { if (is.factor(x)) x <- droplevels(x); names(sort(table(x), TRUE))[1] }
+  
+  rng <- df %>% summarize(lo = quantile(no2_10, 0.01, na.rm = TRUE),
+                          hi = quantile(no2_10, 0.99, na.rm = TRUE))
+  
+  expand.grid(
+    no2_10 = seq(rng$lo, rng$hi, length.out = n),
+    sex_category = sx_lvls,
+    arf_subtype = sub_lvls,
+    KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE
+  ) |> 
+    as_tibble() |>
+    mutate(
+      pm25_mean             = safe_mean(df$pm25_mean),
+      age                   = safe_mean(df$age),
+      race_ethnicity_simple = top_level(df$race_ethnicity_simple),
+      svi_overall           = safe_mean(df$svi_overall),
+      acs_median_income     = safe_mean(df$acs_median_income),
+      acs_pct_lt_hs         = safe_mean(df$acs_pct_lt_hs),
+      acs_unemp_rate_pct    = safe_mean(df$acs_unemp_rate_pct),
+      acs_pct_insured       = safe_mean(df$acs_pct_insured),
+      sex_category          = factor(sex_category, levels = levels(df$sex_category)),
+      arf_subtype           = factor(arf_subtype,  levels = levels(df$arf_subtype)),
+      race_ethnicity_simple = factor(race_ethnicity_simple, levels = levels(df$race_ethnicity_simple))
+    )
+}
+
+grid_sex <- make_grid_sex(arf_exp, sx_lvls, sub_lvls)
+
+df_mort_inhosp_sex <- pred_ci_log(fit_mort_inhosp_sex, grid_sex)
+df_mort_30d_sex    <- pred_ci_log(fit_mort_30d_sex,    grid_sex)
+df_vent_sex        <- pred_ci_nb (fit_vent_nb_sex,     grid_sex)
+
+p1_sex <- ggplot(df_mort_inhosp_sex, aes(no2_10, pred, color = arf_subtype)) +
+  geom_line(size = 1.2) +
+  geom_line(aes(y = lo), linetype = "dashed", alpha = 0.6) +
+  geom_line(aes(y = hi), linetype = "dashed", alpha = 0.6) +
+  facet_wrap(~ sex_category) +
+  pal + theme_pub +
+  labs(title = "In-hospital mortality vs NO₂, stratified by sex",
+       x = "NO₂ (per 10 ppb)", y = "Predicted probability",
+       color = "ARF subtype")
+
+p2_sex <- ggplot(df_mort_30d_sex, aes(no2_10, pred, color = arf_subtype)) +
+  geom_line(size = 1.2) +
+  geom_line(aes(y = lo), linetype = "dashed", alpha = 0.6) +
+  geom_line(aes(y = hi), linetype = "dashed", alpha = 0.6) +
+  facet_wrap(~ sex_category) +
+  pal + theme_pub +
+  labs(title = "30-day mortality vs NO₂, stratified by sex",
+       x = "NO₂ (per 10 ppb)", y = "Predicted probability",
+       color = "ARF subtype")
+
+p3_sex <- ggplot(df_vent_sex, aes(no2_10, pred, color = arf_subtype)) +
+  geom_line(size = 1.2) +
+  geom_line(aes(y = lo), linetype = "dashed", alpha = 0.6) +
+  geom_line(aes(y = hi), linetype = "dashed", alpha = 0.6) +
+  facet_wrap(~ sex_category) +
+  pal + theme_pub +
+  labs(title = "Ventilation hours vs NO₂, stratified by sex",
+       x = "NO₂ (per 10 ppb)", y = "Predicted mean hours",
+       color = "ARF subtype")
+
+
+combo_sex <- (p1_sex | p2_sex) / p3_sex + plot_layout(guides = "collect") & theme(legend.position = "bottom")
+save_plot(combo_sex, "no2_by_sex_subtype_combined")
+
+
+fit_mort_inhosp_re <- glm(
+  in_hosp_death ~ pm25_mean + no2_10*race_ethnicity_simple + arf_subtype + age +
+    sex_category + svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp, family = binomial()
+)
+
+fit_mort_30d_re <- glm(
+  death_30d ~ pm25_mean + no2_10*race_ethnicity_simple + arf_subtype + age +
+    sex_category + svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp, family = binomial()
+)
+
+fit_vent_nb_re <- MASS::glm.nb(
+  vent_hours ~ pm25_mean + no2_10*race_ethnicity_simple + arf_subtype + age +
+    sex_category + svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp
+)
+
+re_lvls  <- fit_mort_inhosp_re$xlevels$race_ethnicity_simple
+sub_lvls <- fit_mort_inhosp_re$xlevels$arf_subtype
+
+make_grid_re <- function(df, re_lvls, sub_lvls, n = 150) {
+  safe_mean <- function(x) { m <- mean(x, na.rm = TRUE); if (is.nan(m)) NA_real_ else m }
+  rng <- df %>% summarize(lo = quantile(no2_10, 0.01, na.rm = TRUE),
+                          hi = quantile(no2_10, 0.99, na.rm = TRUE))
+  expand.grid(
+    no2_10 = seq(rng$lo, rng$hi, length.out = n),
+    race_ethnicity_simple = re_lvls,
+    arf_subtype = sub_lvls,
+    KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE
+  ) |>
+    as_tibble() |>
+    mutate(
+      pm25_mean          = safe_mean(df$pm25_mean),
+      age                = safe_mean(df$age),
+      sex_category       = names(sort(table(df$sex_category), TRUE))[1],
+      svi_overall        = safe_mean(df$svi_overall),
+      acs_median_income  = safe_mean(df$acs_median_income),
+      acs_pct_lt_hs      = safe_mean(df$acs_pct_lt_hs),
+      acs_unemp_rate_pct = safe_mean(df$acs_unemp_rate_pct),
+      acs_pct_insured    = safe_mean(df$acs_pct_insured),
+      race_ethnicity_simple = factor(race_ethnicity_simple, levels = levels(df$race_ethnicity_simple)),
+      sex_category          = factor(sex_category, levels = levels(df$sex_category)),
+      arf_subtype           = factor(arf_subtype, levels = levels(df$arf_subtype))
+    )
+}
+
+grid_re <- make_grid_re(arf_exp, re_lvls, sub_lvls)
+
+df_mort_inhosp_re <- pred_ci_log(fit_mort_inhosp_re, grid_re)
+df_mort_30d_re    <- pred_ci_log(fit_mort_30d_re,    grid_re)
+df_vent_re        <- pred_ci_nb (fit_vent_nb_re,     grid_re)
+
+# set y-axis limits for all races except Hispanic Black
+mort_y_lim <- c(0, 0.3)
+vent_y_lim <- c(0, 20)
+
+# mortality: in-hospital
+p1_re <- ggplot(df_mort_inhosp_re, aes(no2_10, pred, color = arf_subtype)) +
+  geom_line(size = 1.2) +
+  geom_line(aes(y = lo), linetype = "dashed", alpha = 0.6) +
+  geom_line(aes(y = hi), linetype = "dashed", alpha = 0.6) +
+  facet_wrap(~ race_ethnicity_simple, nrow = 2) +
+  pal + theme_pub +
+  labs(title = "In-hospital mortality vs NO₂, \nstratified by race/ethnicity",
+       x = "NO₂ (per 10 ppb)", y = "Predicted probability",
+       color = "ARF subtype") +
+  scale_y_continuous(limits = mort_y_lim) +
+  # allow Hispanic Black to exceed limits
+  facet_wrap(~ race_ethnicity_simple, nrow = 2, scales = "free_y")
+
+# mortality: 30-day
+p2_re <- ggplot(df_mort_30d_re, aes(no2_10, pred, color = arf_subtype)) +
+  geom_line(size = 1.2) +
+  geom_line(aes(y = lo), linetype = "dashed", alpha = 0.6) +
+  geom_line(aes(y = hi), linetype = "dashed", alpha = 0.6) +
+  facet_wrap(~ race_ethnicity_simple, nrow = 2) +
+  pal + theme_pub +
+  labs(title = "30-day mortality vs NO₂, \nstratified by race/ethnicity",
+       x = "NO₂ (per 10 ppb)", y = "Predicted probability",
+       color = "ARF subtype") +
+  scale_y_continuous(limits = mort_y_lim) +
+  facet_wrap(~ race_ethnicity_simple, nrow = 2, scales = "free_y")
+
+# ventilation hours
+p3_re <- ggplot(df_vent_re, aes(no2_10, pred, color = arf_subtype)) +
+  geom_line(size = 1.2) +
+  geom_line(aes(y = lo), linetype = "dashed", alpha = 0.6) +
+  geom_line(aes(y = hi), linetype = "dashed", alpha = 0.6) +
+  facet_wrap(~ race_ethnicity_simple, nrow = 2) +
+  pal + theme_pub +
+  labs(title = "Ventilation hours vs NO₂, stratified by race/ethnicity",
+       x = "NO₂ (per 10 ppb)", y = "Predicted mean hours",
+       color = "ARF subtype") +
+  scale_y_continuous(limits = vent_y_lim) +
+  facet_wrap(~ race_ethnicity_simple, nrow = 2, scales = "free_y")
+
+combo_re <- (p1_re | p2_re) / p3_re + plot_layout(guides = "collect") & theme(legend.position = "bottom")
+save_plot(combo_re, "no2_by_race_subtype_combined")
+
+
 # ------------------------------------ 10) Descriptive Tables ------------------------------------
 arf_summary <- outcomes_exp %>%
   filter(cohort == "ARF") %>%
@@ -1251,12 +1461,208 @@ arf_counts_export <- analysis_df %>%
 
 write_csv(arf_counts_export, file.path(out_dir, "arf_counts_by_county_year.csv"))
 
+
+
+# ---------------- Federated Output Script ----------------
+# Each site runs this locally. Only aggregated predictions are exported.
+# No line-level or patient data leaves the site.
+# ---------------------------------------------------------
+
+# ---- 0) Site config ----
+site_plain_name <- config$site_name
+out_dir         <- "output/federated_preds"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+site_id <- digest(paste(site_plain_name, sep="::"), algo = "sha1")
+
+# ---- 1) Data prep ----
+stopifnot(exists("arf_exp"))
+
+arf_exp <- arf_exp %>%
+  mutate(
+    arf_subtype = case_when(
+      mixed_arf == 1 ~ "Mixed",
+      hypoxemic_arf == 1 ~ "Hypoxemic",
+      hypercapnic_arf == 1 ~ "Hypercapnic",
+      TRUE ~ "Other"
+    ),
+    arf_subtype = factor(arf_subtype, levels = c("Hypoxemic","Hypercapnic","Mixed","Other")),
+    no2_10 = no2_mean/10,
+    sex_category = droplevels(factor(sex_category)),
+    race_ethnicity_simple = droplevels(factor(race_ethnicity_simple))
+  )
+
+# ---- 2) Shared NO2 grid ----
+no2_grid <- tibble(no2_10 = seq(0, 6, by = 0.02))   # 0–60 ppb
+
+# --- Safe helpers (unchanged) ---
+safe_mean <- function(x) { m <- mean(x, na.rm = TRUE); if (is.nan(m)) NA_real_ else m }
+top_level <- function(x) {
+  if (is.factor(x)) x <- droplevels(x)
+  tab <- sort(table(x), decreasing = TRUE)
+  if (length(tab) == 0) NA_character_ else names(tab)[1]
+}
+
+# --- Shared NO2 grid (unchanged) ---
+no2_grid <- tibble::tibble(no2_10 = seq(0, 6, by = 0.02))
+
+# --- FIXED: make_grid that avoids duplicate names ---
+make_grid <- function(df, by_vars = character()) {
+  # Start with NO2 grid
+  base <- tibble::tibble(no2_10 = no2_grid$no2_10)
+  
+  # Add anchors ONLY if that variable is NOT being stratified
+  if (!"pm25_mean" %in% by_vars)
+    base$pm25_mean <- safe_mean(df$pm25_mean)
+  if (!"age" %in% by_vars)
+    base$age <- safe_mean(df$age)
+  if (!"sex_category" %in% by_vars)
+    base$sex_category <- top_level(df$sex_category)
+  if (!"race_ethnicity_simple" %in% by_vars)
+    base$race_ethnicity_simple <- top_level(df$race_ethnicity_simple)
+  if (!"svi_overall" %in% by_vars)
+    base$svi_overall <- safe_mean(df$svi_overall)
+  if (!"acs_median_income" %in% by_vars)
+    base$acs_median_income <- safe_mean(df$acs_median_income)
+  if (!"acs_pct_lt_hs" %in% by_vars)
+    base$acs_pct_lt_hs <- safe_mean(df$acs_pct_lt_hs)
+  if (!"acs_unemp_rate_pct" %in% by_vars)
+    base$acs_unemp_rate_pct <- safe_mean(df$acs_unemp_rate_pct)
+  if (!"acs_pct_insured" %in% by_vars)
+    base$acs_pct_insured <- safe_mean(df$acs_pct_insured)
+  
+  # Expand over requested stratifiers
+  if ("arf_subtype" %in% by_vars) {
+    base <- tidyr::expand_grid(base, arf_subtype = levels(df$arf_subtype))
+  }
+  if ("sex_category" %in% by_vars) {
+    base <- tidyr::expand_grid(base, sex_category = levels(df$sex_category))
+  }
+  if ("race_ethnicity_simple" %in% by_vars) {
+    base <- tidyr::expand_grid(base, race_ethnicity_simple = levels(df$race_ethnicity_simple))
+  }
+  
+  # Coerce to factors when present
+  if ("arf_subtype" %in% names(base)) {
+    base$arf_subtype <- factor(base$arf_subtype, levels = levels(df$arf_subtype))
+  }
+  if ("sex_category" %in% names(base)) {
+    base$sex_category <- factor(base$sex_category, levels = levels(df$sex_category))
+  }
+  if ("race_ethnicity_simple" %in% names(base)) {
+    base$race_ethnicity_simple <- factor(base$race_ethnicity_simple,
+                                         levels = levels(df$race_ethnicity_simple))
+  }
+  
+  tibble::as_tibble(base)
+}
+
+
+
+# ---- 3) Prediction helpers ----
+pred_ci_log <- function(fit, newdata) {
+  pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+  tibble(pred = plogis(pr$fit),
+         lo   = plogis(pr$fit - 1.96*pr$se.fit),
+         hi   = plogis(pr$fit + 1.96*pr$se.fit))
+}
+pred_ci_nb <- function(fit, newdata) {
+  pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+  tibble(pred = exp(pr$fit),
+         lo   = exp(pr$fit - 1.96*pr$se.fit),
+         hi   = exp(pr$fit + 1.96*pr$se.fit))
+}
+
+# ---- 4) Fit models ----
+fit_inhosp <- glm(in_hosp_death ~ pm25_mean + no2_10*arf_subtype + age + sex_category +
+                    race_ethnicity_simple + svi_overall + acs_median_income +
+                    acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
+                  data = arf_exp, family = binomial())
+
+fit_30d <- glm(death_30d ~ pm25_mean + no2_10*arf_subtype + age + sex_category +
+                 race_ethnicity_simple + svi_overall + acs_median_income +
+                 acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
+               data = arf_exp, family = binomial())
+
+fit_vent <- MASS::glm.nb(vent_hours ~ pm25_mean + no2_10*arf_subtype + age + sex_category +
+                           race_ethnicity_simple + svi_overall + acs_median_income +
+                           acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured,
+                         data = arf_exp)
+
+# ---- 5) Predictions by sex ----
+make_grid_from_fit <- function(df, fit, by_vars = character(), no2_vals = seq(0, 6, by = 0.02)) {
+  xlv <- fit$xlevels
+  # Helper to get levels from model if available, else from df
+  levs <- function(var) if (!is.null(xlv[[var]])) xlv[[var]] else levels(droplevels(factor(df[[var]])))
+  
+  base <- tibble::tibble(
+    no2_10               = no2_vals,
+    pm25_mean            = mean(df$pm25_mean, na.rm = TRUE),
+    age                  = mean(df$age, na.rm = TRUE),
+    svi_overall          = mean(df$svi_overall, na.rm = TRUE),
+    acs_median_income    = mean(df$acs_median_income, na.rm = TRUE),
+    acs_pct_lt_hs        = mean(df$acs_pct_lt_hs, na.rm = TRUE),
+    acs_unemp_rate_pct   = mean(df$acs_unemp_rate_pct, na.rm = TRUE),
+    acs_pct_insured      = mean(df$acs_pct_insured, na.rm = TRUE)
+  )
+  
+  if (!"sex_category" %in% by_vars)           base$sex_category <- levs("sex_category")[1]
+  if (!"race_ethnicity_simple" %in% by_vars)  base$race_ethnicity_simple <- levs("race_ethnicity_simple")[1]
+  
+  if ("arf_subtype" %in% by_vars)            base <- tidyr::expand_grid(base, arf_subtype = levs("arf_subtype"))
+  if ("sex_category" %in% by_vars)           base <- tidyr::expand_grid(base, sex_category = levs("sex_category"))
+  if ("race_ethnicity_simple" %in% by_vars)  base <- tidyr::expand_grid(base, race_ethnicity_simple = levs("race_ethnicity_simple"))
+  
+  if ("arf_subtype" %in% names(base))            base$arf_subtype <- factor(base$arf_subtype, levels = levs("arf_subtype"))
+  if ("sex_category" %in% names(base))           base$sex_category <- factor(base$sex_category, levels = levs("sex_category"))
+  if ("race_ethnicity_simple" %in% names(base))  base$race_ethnicity_simple <- factor(base$race_ethnicity_simple, levels = levs("race_ethnicity_simple"))
+  base
+}
+
+# Build grids directly from the fitted model’s levels
+grid_sex  <- make_grid_from_fit(arf_exp, fit_inhosp, by_vars = c("arf_subtype","sex_category"))
+grid_race <- make_grid_from_fit(arf_exp, fit_inhosp, by_vars = c("arf_subtype","race_ethnicity_simple"))
+
+# Apply to your grids
+pred_inhosp_sex <- dplyr::bind_cols(grid_sex,  pred_ci_log(fit_inhosp, grid_sex)) |>
+  dplyr::mutate(site_id = site_id, outcome = "in_hosp_death")
+
+pred_30d_sex <- dplyr::bind_cols(grid_sex, pred_ci_log(fit_30d, grid_sex)) |>
+  dplyr::mutate(site_id = site_id, outcome = "death_30d")
+
+pred_vent_sex <- dplyr::bind_cols(grid_sex, pred_ci_nb(fit_vent, grid_sex)) |>
+  dplyr::mutate(site_id = site_id, outcome = "vent_hours")
+
+
+# ---- 6) Predictions by race ----
+pred_inhosp_race <- bind_cols(grid_race, pred_ci_log(fit_inhosp, grid_race)) %>%
+  mutate(site_id = site_id, outcome = "in_hosp_death")
+
+pred_30d_race <- bind_cols(grid_race, pred_ci_log(fit_30d, grid_race)) %>%
+  mutate(site_id = site_id, outcome = "death_30d")
+
+pred_vent_race <- bind_cols(grid_race, pred_ci_nb(fit_vent, grid_race)) %>%
+  mutate(site_id = site_id, outcome = "vent_hours")
+
+# ---- 7) Write outputs ----
+safe_cols <- c("site_id","outcome","no2_10","arf_subtype","sex_category",
+               "race_ethnicity_simple","pred","lo","hi")
+
+write_csv(dplyr::select(pred_inhosp_sex, all_of(safe_cols)), file.path(out_dir, "site_preds_inhosp_by_sex.csv"))
+write_csv(dplyr::select(pred_30d_sex,    all_of(safe_cols)), file.path(out_dir, "site_preds_30d_by_sex.csv"))
+write_csv(dplyr::select(pred_vent_sex,   all_of(safe_cols)), file.path(out_dir, "site_preds_vent_by_sex.csv"))
+
+write_csv(dplyr::select(pred_inhosp_race, all_of(safe_cols)), file.path(out_dir, "site_preds_inhosp_by_race.csv"))
+write_csv(dplyr::select(pred_30d_race,    all_of(safe_cols)), file.path(out_dir, "site_preds_30d_by_race.csv"))
+write_csv(dplyr::select(pred_vent_race,   all_of(safe_cols)), file.path(out_dir, "site_preds_vent_by_race.csv"))
+
+message("Done. Outputs written to: ", normalizePath(out_dir))
+
+
 # =========================
 # Wrap up
 # =========================
 
 message("\n✅ All analyses and figures complete!")
 message("📂 Please delete the csv files with patient data and upload the 'output' folder (including figures, models, and data) to Box.\n")
-
-
 

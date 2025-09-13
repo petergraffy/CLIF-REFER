@@ -48,7 +48,7 @@ tables <- c("patient", "hospitalization", "vitals", "labs",
             "microbiology_culture")
 
 # Load configuration utility
-setwd("/Users/saborpete/Desktop/Peter/Postdoc/CLIF") #<------ set your working directory to the cloned repo here
+#setwd("~/CLIF-REFER") #<------ set your working directory to the cloned repo path here
 source("utils/config.R")
 site_name <- config$site_name
 tables_path <- config$tables_path
@@ -69,6 +69,9 @@ if (length(exts) == 0) exts <- c("csv","parquet","fst")
 
 # Build a pattern that matches any of the extensions
 ext_pat <- paste0("\\.(", paste(unique(exts), collapse = "|"), ")$")
+
+
+#setwd("~/CLIF_tables") #<------ if your CLIF tables are not in a subfolder or the environment, change your working directory to their path here
 
 # Look for CLIF-ish filenames in this folder OR subfolders
 all_files <- list.files(

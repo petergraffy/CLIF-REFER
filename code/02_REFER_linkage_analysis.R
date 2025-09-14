@@ -1996,6 +1996,466 @@ ggsave(
 )
 
 
+# ============================================================
+# Best-performing subtype models with FULL adjustment set
+# Base terms are always included; we add Tmax, Tmin, Prcp, VP sequentially
+# ============================================================
+
+
+# ----- Fixed adjustment set (use only those present) -----
+base_terms_all <- c(
+  "pm25_mean","no2_mean","age","sex_category","race_ethnicity_simple",
+  "svi_overall","acs_median_income","acs_pct_lt_hs","acs_unemp_rate_pct","acs_pct_insured"
+)
+base_terms <- intersect(base_terms_all, names(arf_exp))
+
+# Variables to add sequentially (use only those present)
+add_terms_all <- c("tmax_mean","tmin_mean","prcp_mean","vp_mean")
+add_terms <- intersect(add_terms_all, names(arf_exp))
+if (length(setdiff(add_terms_all, add_terms)))
+  message("Skipping missing env vars: ", paste(setdiff(add_terms_all, add_terms), collapse = ", "))
+
+# ----- Helpers -----
+get_auc_cc <- function(formula, data, outcome) {
+  df <- model.frame(formula, data = data, na.action = na.omit)
+  if (!nrow(df)) return(list(roc=NULL, auc=NA_real_, n=0))
+  fit <- glm(formula, data = df, family = binomial())
+  p   <- predict(fit, type = "response")
+  y   <- df[[outcome]]
+  if (is.logical(y)) y <- as.integer(y)
+  if (is.numeric(y)) y <- factor(y, levels = c(0,1))
+  if (is.factor(y) && !identical(levels(y), c("0","1"))) {
+    y <- forcats::fct_relabel(y, as.character) |> forcats::fct_drop()
+  }
+  if (length(levels(y)) < 2) return(list(roc=NULL, auc=NA_real_, n=nrow(df)))
+  r <- pROC::roc(response = y, predictor = p, levels = c("0","1"), quiet = TRUE, direction = "<")
+  list(roc = r, auc = as.numeric(pROC::auc(r)), n = nrow(df))
+}
+
+# Build cumulative forms: outcome ~ (BASE) + sequential add-ons
+build_seq_forms_adj <- function(outcome, base_terms, add_terms) {
+  rhs_base <- paste(base_terms, collapse = " + ")
+  fmls  <- list(as.formula(glue("{outcome} ~ {rhs_base}")))
+  nms   <- c("Adj")
+  terms <- character()
+  for (t in add_terms) {
+    terms <- c(terms, t)
+    rhs <- paste(c(rhs_base, terms), collapse = " + ")
+    fmls[[length(fmls)+1]] <- as.formula(glue("{outcome} ~ {rhs}"))
+    nms <- c(nms, paste0("Adj + ", paste(terms, collapse = " + ")))
+  }
+  names(fmls) <- nms
+  fmls
+}
+
+# Legend labels with plotmath subscripts
+shorten_name <- function(x) {
+  x <- str_replace(x, "^Adj \\+ ", "+")
+  x <- str_replace_all(x, "no2_mean",  "NO[2]")
+  x <- str_replace_all(x, "pm25_mean", "PM[2.5]")
+  x <- str_replace_all(x, "tmax_mean", "T[max]")
+  x <- str_replace_all(x, "tmin_mean", "T[min]")
+  x <- str_replace_all(x, "prcp_mean", "Prcp")
+  x <- str_replace_all(x, "vp_mean",   "VP")
+  x
+}
+mk_labels <- function(roc_list) {
+  keep <- !vapply(roc_list, function(x) is.null(x$roc) || is.na(x$auc), logical(1))
+  rl   <- roc_list[keep]
+  nms  <- names(rl)
+  codes <- paste0("M", seq_along(nms) - 1)
+  aucs  <- map_dbl(rl, "auc")
+  short <- ifelse(nms == "Adj", "Adj", shorten_name(nms))
+  expr_str <- sprintf('%s:~%s~plain("(%.3f)")', codes, short, aucs)
+  tibble(name = nms, code = codes, auc = aucs,
+         label_expr = map(expr_str, ~ parse(text = .x)[[1]]))
+}
+roc_to_df <- function(roc_obj, code) {
+  tibble(
+    specificity = rev(roc_obj$specificities),
+    sensitivity = rev(roc_obj$sensitivities),
+    model = code
+  )
+}
+style_roc <- function(p, ncol_legend = 3) {
+  p +
+    theme_classic(base_size = 12) +
+    theme(
+      legend.position   = "bottom",
+      legend.title      = element_text(size = 10),
+      legend.text       = element_text(size = 9),
+      legend.key.width  = unit(0.9, "lines"),
+      legend.margin     = margin(0, 0, 0, 0),
+      plot.margin       = margin(6, 8, 46, 8)
+    ) +
+    guides(color = guide_legend(ncol = ncol_legend, byrow = TRUE))
+}
+
+best_by_subtype <- function(outcome_var, pretty_outcome, out_stub) {
+  stopifnot("arf_subtype" %in% names(arf_exp))
+  subtypes <- levels(droplevels(factor(arf_exp$arf_subtype)))
+  forms <- build_seq_forms_adj(outcome_var, base_terms, add_terms)
+  
+  all_auc_rows <- list(); best_rows <- list()
+  roc_dir <- file.path("roc_by_subtype", out_stub)
+  
+  for (st in subtypes) {
+    dat <- arf_exp |> filter(arf_subtype == st)
+    aucs <- imap(forms, ~ get_auc_cc(.x, dat, outcome_var))
+    auc_df <- tibble(
+      subtype = st,
+      model   = names(forms),
+      auc     = map_dbl(aucs, "auc"),
+      n       = map_dbl(aucs, "n")
+    )
+    all_auc_rows[[st]] <- auc_df
+    
+    valid <- which(!is.na(auc_df$auc))
+    if (!length(valid)) {
+      best_rows[[st]] <- tibble(subtype = st, best_model = NA_character_, auc = NA_real_, n = 0L)
+      next
+    }
+    max_auc <- max(auc_df$auc[valid])
+    cand    <- valid[which(abs(auc_df$auc[valid] - max_auc) < 1e-12)]
+    best_ix <- min(cand) # tie -> simpler model
+    best_row <- auc_df[best_ix, , drop = FALSE]
+    best_rows[[st]] <- best_row |> transmute(subtype, best_model = model, auc, n)
+    
+    # --- Build ROC overlay for this subtype (highlight best) ---
+    # Keep only models with defined ROC
+    keep_names <- names(forms)[valid]
+    roc_list   <- aucs[valid]; names(roc_list) <- keep_names
+    
+    # Legend labels w/ AUC embedded
+    labs_sub <- mk_labels(roc_list)
+    
+    # Tidy ROC data
+    df_roc <- map2(roc_list, labs_sub$code, ~ roc_to_df(.x$roc, .y)) |> list_rbind()
+    
+    # Correct: best model name is in `best_row$model` (not best_row$best_model)
+    best_model_name <- best_row$model
+    idx <- match(best_model_name, labs_sub$name)
+    best_code <- if (!is.na(idx)) labs_sub$code[idx] else NA_character_
+    
+    if (nrow(df_roc) == 0L) {
+      next  # nothing to plot for this subtype
+    }
+    
+    df_roc <- df_roc |>
+      dplyr::mutate(
+        is_best = if (!is.na(best_code)) model == best_code else FALSE,
+        lw      = ifelse(is_best, 1.6, 0.9),
+        alph    = ifelse(is_best, 1.0, 0.85)
+      )
+    
+    p <- style_roc(
+      ggplot(df_roc, aes(x = 1 - specificity, y = sensitivity, color = model)) +
+        geom_abline(slope = 1, intercept = 0, linetype = 2, linewidth = 0.5) +
+        geom_line(aes(linewidth = lw, alpha = alph)) +
+        scale_linewidth_identity() +
+        scale_alpha_identity() +
+        coord_equal() +
+        labs(
+          title = glue("{pretty_outcome}: ROC — {st}"),
+          x = "1 - Specificity (FPR)", y = "Sensitivity (TPR)", color = "Models"
+        ) +
+        scale_color_discrete(
+          breaks = labs_sub$code,
+          labels = labs_sub$label_expr
+        ),
+      ncol_legend = 3
+    )
+    
+    # save under <repo>/output/figures/roc_by_subtype/<out_stub>/...
+    save_plot(p, file.path(roc_dir, paste0("roc_", out_stub, "_", gsub("[^[:alnum:]_]+", "", st))))
+    
+  }
+  
+  auc_all  <- bind_rows(all_auc_rows)  |> arrange(subtype, match(model, names(forms)))
+  best_all <- bind_rows(best_rows)     |> arrange(subtype)
+  
+  # plain ASCII model names for CSV
+  plainify <- function(x) x |>
+    str_replace("^Adj \\+ ", "+") |>
+    str_replace_all("no2_mean","NO2") |>
+    str_replace_all("pm25_mean","PM2.5") |>
+    str_replace_all("tmax_mean","Tmax") |>
+    str_replace_all("tmin_mean","Tmin") |>
+    str_replace_all("prcp_mean","Prcp") |>
+    str_replace_all("vp_mean","VP")
+  
+  best_all <- best_all |> mutate(best_model_pretty = ifelse(best_model=="Adj","Adj", plainify(best_model)))
+  
+  save_tbl(auc_all,  file.path("metrics", paste0("auc_all_models_by_subtype_", out_stub)))
+  save_tbl(best_all, file.path("metrics", paste0("best_models_by_subtype_",   out_stub)))
+  
+  invisible(list(auc_all = auc_all, best = best_all))
+}
+
+# =========================
+# Run (both outcomes)
+# =========================
+res_inhosp <- best_by_subtype("in_hosp_death", "In-hospital Death", "inhosp")
+res_30d    <- best_by_subtype("death_30d",     "30-day Death",      "30d")
+
+print(res_inhosp$best)
+print(res_30d$best)
+
+# ============================================================
+# Forward stepwise AUC search per ARF subtype (mortality)
+# Finds a compact, high-AUC model for each subtype & outcome
+# ============================================================
+
+# ---------- KNOBS ----------
+# Start from SVI-only (change to NULL to start from intercept-only)
+base_term <- "no2_mean"
+
+# Full slate of potential predictors (we'll intersect with columns present)
+candidates_all <- c(
+  # demographics / social
+  "age", "sex_category", "race_ethnicity_simple",
+  "svi_overall", "acs_median_income", "acs_pct_lt_hs",
+  "acs_unemp_rate_pct", "acs_pct_insured",
+  # pollutants
+  "no2_mean", "pm25_mean",
+  # daymet
+  "tmax_mean", "tmin_mean", "prcp_mean", "vp_mean"
+)
+
+# Stepwise limits / stopping rules
+max_terms <- 5        # max number of terms to add beyond the base (keep it clinical)
+min_delta <- 0.002    # minimum AUC gain to consider meaningful
+p_thresh  <- 0.05     # DeLong p-value threshold vs previous step
+
+# ---------- AUC helper on complete cases ----------
+get_auc_cc <- function(formula, data, outcome) {
+  df <- model.frame(formula, data = data, na.action = na.omit)
+  if (!nrow(df)) return(list(roc=NULL, auc=NA_real_, n=0, df=df))
+  fit <- glm(formula, data = df, family = binomial())
+  p   <- predict(fit, type = "response")
+  y   <- df[[outcome]]
+  if (is.logical(y)) y <- as.integer(y)
+  if (is.numeric(y)) y <- factor(y, levels = c(0,1))
+  if (is.factor(y) && !identical(levels(y), c("0","1"))) {
+    y <- forcats::fct_relabel(y, as.character) |> forcats::fct_drop()
+  }
+  if (length(levels(y)) < 2) return(list(roc=NULL, auc=NA_real_, n=nrow(df), df=df))
+  r <- pROC::roc(response = y, predictor = p, levels = c("0","1"), quiet = TRUE, direction = "<")
+  list(roc = r, auc = as.numeric(pROC::auc(r)), n = nrow(df), df = df)
+}
+
+# ---------- forward stepwise search by AUC (greedy) ----------
+stepwise_search <- function(data, outcome, base_term, candidates, max_terms, min_delta, p_thresh) {
+  # start terms
+  terms <- character(0)
+  if (!is.null(base_term) && base_term %in% names(data)) terms <- base_term
+  
+  # compute base
+  rhs <- if (length(terms)) paste(terms, collapse = " + ") else "1"
+  f_curr <- as.formula(glue("{outcome} ~ {rhs}"))
+  res_curr <- get_auc_cc(f_curr, data, outcome)
+  if (is.na(res_curr$auc)) return(list(path = tibble(), best = NULL, rocs = list()))
+  
+  steps <- tibble(step = 0L, added = if (length(terms)) "(base)" else "(intercept)",
+                  formula = deparse1(f_curr), auc = res_curr$auc, n = res_curr$n,
+                  delta_auc = NA_real_, p_value = NA_real_)
+  
+  remaining <- setdiff(candidates, terms)
+  rocs <- list(`M0` = res_curr$roc)
+  names_map <- list(`M0` = steps$formula[1])
+  
+  # iterate
+  k <- 0L
+  while (length(remaining) > 0 && k < max_terms) {
+    # try adding each remaining term
+    trial <- map(remaining, function(add) {
+      rhs2 <- paste(c(terms, add), collapse = " + ")
+      f <- as.formula(glue("{outcome} ~ {rhs2}"))
+      list(term = add, res = get_auc_cc(f, data, outcome), fml = f)
+    })
+    
+    # keep only valid AUCs
+    trial <- keep(trial, ~ !is.na(.x$res$auc))
+    if (!length(trial)) break
+    
+    # pick best by AUC
+    aucs <- map_dbl(trial, ~ .x$res$auc)
+    best_idx <- which.max(aucs)
+    cand     <- trial[[best_idx]]
+    
+    # compare with DeLong vs current (handle differing N)
+    p_val <- tryCatch(pROC::roc.test(res_curr$roc, cand$res$roc, method = "delong")$p.value,
+                      error = function(e) NA_real_)
+    d_auc <- cand$res$auc - res_curr$auc
+    
+    # stopping rule
+    if (!is.na(p_val) && p_val > p_thresh && (is.na(d_auc) || d_auc < min_delta)) break
+    
+    # accept
+    terms <- c(terms, cand$term)
+    res_curr <- cand$res
+    k <- k + 1L
+    
+    steps <- add_row(
+      steps,
+      step = k,
+      added = cand$term,
+      formula = deparse1(cand$fml),
+      auc = cand$res$auc,
+      n = cand$res$n,
+      delta_auc = d_auc,
+      p_value = p_val
+    )
+    
+    rocs[[paste0("M", k)]] <- cand$res$roc
+    names_map[[paste0("M", k)]] <- deparse1(cand$fml)
+    
+    remaining <- setdiff(remaining, cand$term)
+  }
+  
+  list(path = steps, best = tail(steps, 1), rocs = rocs, names_map = names_map)
+}
+
+# ---------- pretty legend labels (plotmath) ----------
+shorten_name <- function(x) {
+  x %>%
+    str_replace("^.*~", "") %>%                 # strip outcome LHS
+    str_replace("^\\s*", "") %>%
+    str_replace("^1$", "Intercept") %>%
+    str_replace_all("no2_mean",  "NO[2]") %>%
+    str_replace_all("pm25_mean", "PM[2.5]") %>%
+    str_replace_all("tmax_mean", "T[max]") %>%
+    str_replace_all("tmin_mean", "T[min]") %>%
+    str_replace_all("prcp_mean", "Prcp") %>%
+    str_replace_all("vp_mean",   "VP") %>%
+    str_replace_all("\\s*\\+\\s*", " + ")
+}
+mk_labels_from_map <- function(rocs, names_map) {
+  codes <- names(rocs)
+  nm    <- unlist(names_map[codes], use.names = FALSE)
+  # extract RHS and compress for label (“Adj path” style)
+  rhs_short <- ifelse(grepl("~ 1$", nm), "Intercept",
+                      shorten_name(sub(".*~", "", nm)))
+  # compute AUCs for printing
+  aucs <- map_dbl(rocs, ~ as.numeric(pROC::auc(.x)))
+  expr_str <- sprintf('%s:~%s~plain("(%.3f)")', codes, rhs_short, aucs)
+  tibble(code = codes, expr = map(expr_str, ~ parse(text = .x)[[1]]))
+}
+roc_to_df <- function(roc_obj, code) {
+  tibble(
+    specificity = rev(roc_obj$specificities),
+    sensitivity = rev(roc_obj$sensitivities),
+    model = code
+  )
+}
+style_roc <- function(p, ncol_legend = 3) {
+  p +
+    theme_classic(base_size = 12) +
+    theme(
+      legend.position   = "bottom",
+      legend.title      = element_text(size = 10),
+      legend.text       = element_text(size = 9),
+      legend.key.width  = unit(0.9, "lines"),
+      legend.margin     = margin(0, 0, 0, 0),
+      plot.margin       = margin(6, 8, 46, 8)
+    ) +
+    guides(color = guide_legend(ncol = ncol_legend, byrow = TRUE))
+}
+
+# ---------- Runner per outcome across subtypes ----------
+stepwise_by_subtype <- function(outcome_var, pretty_outcome, out_stub) {
+  stopifnot("arf_subtype" %in% names(arf_exp))
+  subtypes <- levels(droplevels(factor(arf_exp$arf_subtype)))
+  
+  # available candidates in data
+  present <- intersect(candidates_all, names(arf_exp))
+  # remove base from candidates so we don't add it twice
+  candidates <- if (!is.null(base_term)) setdiff(present, base_term) else present
+  
+  all_paths <- list()
+  best_rows <- list()
+  
+  roc_dir <- file.path("roc_by_subtype_stepwise", out_stub)
+  
+  for (st in subtypes) {
+    dat <- arf_exp |> filter(arf_subtype == st)
+    sw  <- stepwise_search(dat, outcome_var, base_term, candidates, max_terms, min_delta, p_thresh)
+    
+    if (nrow(sw$path) == 0) {
+      best_rows[[st]] <- tibble(subtype = st, best_step = NA_integer_,
+                                best_formula = NA_character_, auc = NA_real_, n = 0L)
+      next
+    }
+    
+    # record path & best
+    path <- sw$path |> mutate(subtype = st, outcome = outcome_var, .before = 1)
+    all_paths[[st]] <- path
+    best <- sw$best
+    best_rows[[st]] <- tibble(
+      subtype = st, outcome = outcome_var,
+      best_step = best$step, best_formula = best$formula,
+      auc = best$auc, n = best$n
+    )
+    
+    # ----- ROC overlay for the stepwise path -----
+    # convert ROCs to tidy for plotting
+    labs_df <- mk_labels_from_map(sw$rocs, sw$names_map)
+    df_roc <- imap(sw$rocs, ~ roc_to_df(.x, .y)) |> list_rbind()
+    best_code <- paste0("M", best$step)
+    
+    df_roc <- df_roc |>
+      mutate(lw = ifelse(model == best_code, 1.6, 0.9),
+             alph = ifelse(model == best_code, 1.0, 0.85))
+    
+    p <- style_roc(
+      ggplot(df_roc, aes(x = 1 - specificity, y = sensitivity, color = model)) +
+        geom_abline(slope = 1, intercept = 0, linetype = 2, linewidth = 0.5) +
+        geom_line(aes(linewidth = lw, alpha = alph)) +
+        scale_linewidth_identity() + scale_alpha_identity() +
+        coord_equal() +
+        labs(
+          title = glue("{pretty_outcome}: ROC - {st}"),
+          x = "1 - Specificity (FPR)", y = "Sensitivity (TPR)", color = "Models"
+        ) +
+        scale_color_discrete(
+          breaks = labs_df$code,
+          labels = labs_df$expr
+        ),
+      ncol_legend = 2
+    )
+    
+    # save figure: <repo>/output/figures/roc_by_subtype_stepwise/<out_stub>/...
+    save_plot(p, file.path(roc_dir, paste0("stepwise_roc_", out_stub, "_", gsub("[^[:alnum:]_]+", "", st))))
+  }
+  
+  # bind & save tables
+  paths_tbl <- bind_rows(all_paths)
+  best_tbl  <- bind_rows(best_rows)
+  
+  save_tbl(paths_tbl, file.path("metrics", paste0("stepwise_paths_", out_stub)))
+  save_tbl(best_tbl,  file.path("metrics", paste0("stepwise_best_",  out_stub)))
+  
+  invisible(list(paths = paths_tbl, best = best_tbl))
+}
+
+# =========================
+# Run for both outcomes
+# =========================
+res_inhosp_sw <- stepwise_by_subtype("in_hosp_death", "In-hospital Death", "inhosp")
+res_30d_sw    <- stepwise_by_subtype("death_30d",     "30-day Death",      "30d")
+
+# Quick peek
+print(res_inhosp_sw$best)
+print(res_30d_sw$best)
+
+
+
+
+
+
+
+
+
 # =========================
 # Wrap up
 # =========================

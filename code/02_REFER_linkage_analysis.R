@@ -25,26 +25,25 @@ suppressPackageStartupMessages({
   library(pscl)
   library(glmmTMB)
   library(digest)
+  library(pROC)
+  library(glue)
+  library(tibble)
+  library(forcats)
+  library(grid)
 })
 
 # ---- 0.1 Load config (YAML or fallback defaults) ----------------------------------------------
-keep_vars <- c("clif_tables", "cohort_min", "cohort_min_periop")
+keep_vars <- c("clif_tables", "cohort_min", "cohort_min_periop", "repo")
 rm(list = setdiff(ls(envir = .GlobalEnv), keep_vars), envir = .GlobalEnv)
 
 #setwd("~/CLIF-ARFVI") #<------ set your working directory to the main folder path here if needed
 
 # ------------------------------- 0) Config & Setup --------------------------------
-# Expect: utils/config.R defines a list named `config`
-# Example fields (customize in utils/config.R as needed):
-#   site_name, tables_path, file_type,
-#   project_code, version, output_dir, figures_dir
+# --- Repo-anchored config + path helpers ---
+stopifnot(exists("repo"))  # e.g., repo <- "/path/to/your/repo"
+rpath <- function(...) file.path(repo, ...)         # join to repo root
 
-source("utils/config.R")
-
-# safety checks
-if (!exists("config") || !is.list(config)) {
-  stop("`config` was not created by utils/config.R. Make sure it defines a list named `config`.")
-}
+source(rpath("utils", "config.R"))
 
 `%||%` <- function(x, y) if (!is.null(x)) x else y  # null-coalesce helper
 
@@ -61,38 +60,66 @@ print(paste("File Type:", file_type))
 cfg <- list(
   project_code = config$project_code %||% "refer",
   version      = config$version      %||% "v0_1",
-  output_dir   = config$output_dir   %||% "output",
-  figures_dir  = config$figures_dir  %||% "figures",
   site_name    = config$site_name    %||% "site",
   date_stamp   = format(Sys.Date(), "%Y%m%d"),
   run_id       = format(Sys.time(), "%Y%m%d_%H%M%S")
 )
 
-# prefix like: refer_v0_1_20250908
+# directory *names* (keep overridable), but full *paths* anchored to repo
+output_basename  <- config$output_dir  %||% "output"
+figures_basename <- config$figures_dir %||% "figures"
+
+cfg$output_dir   <- rpath(output_basename)                   # e.g., <repo>/output
+cfg$figures_dir  <- figures_basename                         # name only
+cfg$figures_path <- rpath(output_basename, figures_basename) # e.g., <repo>/output/figures
+
+# prefix like: refer_sitename_20250908
 cfg$prefix <- paste(cfg$project_code, cfg$site_name, cfg$date_stamp, sep = "_")
 
 # ensure output folders exist
-dir.create(cfg$output_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create(file.path(cfg$output_dir, cfg$figures_dir), recursive = TRUE, showWarnings = FALSE)
+dir.create(cfg$output_dir,   recursive = TRUE, showWarnings = FALSE)
+dir.create(cfg$figures_path, recursive = TRUE, showWarnings = FALSE)
 
-# ---- Save helpers (use cfg/output_dir/figures_dir) ----------------------------
+# ---- Save helpers (always under repo/output) ----
 .path_csv <- function(name)
-  file.path(cfg$output_dir, paste0(cfg$prefix, "_", name, "_", cfg$run_id, ".csv"))
+  file.path(cfg$output_dir, paste0(cfg$prefix, "_", basename(name), "_", cfg$run_id, ".csv"))
 
 .path_rds <- function(name)
-  file.path(cfg$output_dir, paste0(cfg$prefix, "_", name, "_", cfg$run_id, ".rds"))
+  file.path(cfg$output_dir, paste0(cfg$prefix, "_", basename(name), "_", cfg$run_id, ".rds"))
 
 .path_png <- function(name)
-  file.path(cfg$output_dir, cfg$figures_dir, paste0(cfg$prefix, "_", name, "_", cfg$run_id, ".png"))
+  file.path(cfg$figures_path, paste0(cfg$prefix, "_", basename(name), "_", cfg$run_id, ".png"))
 
 .path_pdf <- function(name)
-  file.path(cfg$output_dir, cfg$figures_dir, paste0(cfg$prefix, "_", name, "_", cfg$run_id, ".pdf"))
+  file.path(cfg$figures_path, paste0(cfg$prefix, "_", basename(name), "_", cfg$run_id, ".pdf"))
 
-save_tbl   <- function(x, name) readr::write_csv(x, .path_csv(name))
-save_model <- function(fit, name) saveRDS(fit, .path_rds(name))
-save_plot  <- function(p, name, w = 11, h = 9, dpi = 300) {
-  ggsave(.path_png(name), p, width = w, height = h, dpi = dpi)
-  ggsave(.path_pdf(name), p, width = w, height = h)
+# If 'name' includes subdirs (e.g., "models/inhosp"), create them under output/ and output/figures/
+.ensure_subdir <- function(name, under) {
+  subdir <- dirname(name)
+  if (!identical(subdir, "."))
+    dir.create(file.path(under, subdir), recursive = TRUE, showWarnings = FALSE)
+}
+
+save_tbl <- function(x, name) {
+  .ensure_subdir(name, cfg$output_dir)
+  readr::write_csv(x, file.path(cfg$output_dir, dirname(name),
+                                paste0(cfg$prefix, "_", basename(name), "_", cfg$run_id, ".csv")))
+}
+
+save_model <- function(fit, name) {
+  .ensure_subdir(name, cfg$output_dir)
+  saveRDS(fit, file.path(cfg$output_dir, dirname(name),
+                         paste0(cfg$prefix, "_", basename(name), "_", cfg$run_id, ".rds")))
+}
+
+save_plot <- function(p, name, w = 11, h = 9, dpi = 300) {
+  .ensure_subdir(name, cfg$figures_path)
+  ggsave(file.path(cfg$figures_path, dirname(name),
+                   paste0(cfg$prefix, "_", basename(name), "_", cfg$run_id, ".png")),
+         p, width = w, height = h, dpi = dpi)
+  ggsave(file.path(cfg$figures_path, dirname(name),
+                   paste0(cfg$prefix, "_", basename(name), "_", cfg$run_id, ".pdf")),
+         p, width = w, height = h)
 }
 
 # ------------------------------------ 1) Table Access & Helpers ---------------------------------
@@ -340,10 +367,10 @@ outcomes <- outcomes |>
   mutate(fips_county = str_pad(as.character(county_code.x), width = 5, pad = "0"),
          GEOID = fips_county)
 
-svi    <- readr::read_csv("exposome/SVI_county_year.csv")
-pm25   <- readr::read_csv("exposome/pm25_county_year.csv")
-no2    <- readr::read_csv("exposome/no2_county_year.csv")
-daymet <- readr::read_csv("exposome/daymet_county_year_allvars.csv")
+svi    <- readr::read_csv(rpath("exposome", "SVI_county_year.csv"))
+pm25   <- readr::read_csv(rpath("exposome", "pm25_county_year.csv"))
+no2    <- readr::read_csv(rpath("exposome", "no2_county_year.csv"))
+daymet <- readr::read_csv(rpath("exposome", "daymet_county_year_allvars.csv"))
 
 exposome <- svi |>
   left_join(pm25,   by = c("GEOID","year")) |>
@@ -351,7 +378,7 @@ exposome <- svi |>
   left_join(daymet, by = c("GEOID","year"))
 
 # --- NEW: add tract-level ACS ----------------------------------------------
-acs <- readr::read_csv("exposome/acs_estimates.csv") |>
+acs <- readr::read_csv(rpath("exposome", "acs_estimates.csv")) |>
   # keep only the columns you need and standardize types
   transmute(
     year  = as.integer(year),
@@ -414,40 +441,27 @@ arf_exp <- outcomes_exp |> filter(cohort == "ARF") |>
                                    levels = c("Non-Hispanic White","Hispanic White","Non-Hispanic Black","Hispanic Black","Asian","Other"))
   )
 
-save_tbl(arf_exp, "arf_exp")
+#save_tbl(arf_exp, "arf_exp")
 
 # ------------------------------------ 7) Models (Adjusted) --------------------------------------
 # Helper to tidy-save any model
 tidy_and_save <- function(fit, name, exponentiate = FALSE, folder = "models") {
-  # Tidy with CIs
   tt <- broom::tidy(fit, exponentiate = exponentiate, conf.int = TRUE)
   
-  # Safe file-name sanitizer: allow letters, numbers, underscore, hyphen
+  # subfolder under <repo>/output
+  out_dir <- file.path(cfg$output_dir, folder)
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  
   sanitize_filename <- function(x) {
-    x <- gsub("[^[:alnum:]_-]+", "_", x)   # hyphen at end of class = literal hyphen
-    x <- gsub("_+", "_", x)                # collapse repeats
-    x <- gsub("^_+|_+$", "", x)            # trim edges
+    x <- gsub("[^[:alnum:]_-]+", "_", x)
+    x <- gsub("_+", "_", x)
+    x <- gsub("^_+|_+$", "", x)
     tolower(x)
   }
   clean_name <- sanitize_filename(name)
   
-  # Ensure subfolder exists: output/models
-  out_dir <- file.path("output", folder)
-  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-  
-  # Preferred: use save_tbl with a subpath (if your helper supports it)
-  out_stem <- file.path(folder, site_name, paste0("model_tidy_", clean_name))
-  ok <- TRUE
-  tryCatch(
-    save_tbl(tt, out_stem),
-    error = function(e) { ok <<- FALSE }
-  )
-  
-  # Fallback: write directly if save_tbl() doesn't accept subpaths
-  if (!ok) {
-    readr::write_csv(tt, file.path(out_dir, paste0("model_tidy_", clean_name, ".csv")))
-  }
-  
+  out_file <- file.path(out_dir, paste0(cfg$prefix, "_model_tidy_", clean_name, "_", cfg$run_id, ".csv"))
+  readr::write_csv(tt, out_file)
   tt
 }
 
@@ -1043,11 +1057,11 @@ tbl1 <- arf_exp_tbl %>%
 # Save (HTML + RTF) — convert with gtsummary::as_gt()
 tbl1_gt <- gtsummary::as_gt(tbl1)
 
-gt::gtsave(tbl1_gt, filename = file.path(cfg$output_dir, cfg$figures_dir,
+gt::gtsave(tbl1_gt, filename = file.path(cfg$figures_path,
                                          paste0(cfg$prefix, "_table1_", cfg$run_id, ".html")))
 # If your gt version supports RTF (≥ 0.10.0 typically); otherwise skip:
 try(
-  gt::gtsave(tbl1_gt, filename = file.path(cfg$output_dir, cfg$figures_dir,
+  gt::gtsave(tbl1_gt, filename = file.path(cfg$figures_path,
                                            paste0(cfg$prefix, "_table1_", cfg$run_id, ".rtf"))),
   silent = TRUE
 )
@@ -1216,7 +1230,7 @@ dplyr::count(analysis_df, year)
 summary(analysis_df$arf_cases)
 
 # Output dir for figures
-fig_dir <- "output/figures"
+fig_dir <- cfg$figures_path
 if (!dir.exists(fig_dir)) dir.create(fig_dir, recursive = TRUE)
 
 # -------------------------
@@ -1446,7 +1460,7 @@ p_side <- ggplot(tidy_models,
 save_fig(p_side, "pollutant_effects_side_by_side.png")
 
 # output folder
-out_dir <- "output/data"
+out_dir <- file.path(cfg$output_dir, "data")
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 arf_counts_export <- analysis_df %>%
@@ -1470,7 +1484,7 @@ write_csv(arf_counts_export, file.path(out_dir, "arf_counts_by_county_year.csv")
 
 # ---- 0) Site config ----
 site_plain_name <- config$site_name
-out_dir         <- "output/federated_preds"
+out_dir         <- file.path(cfg$output_dir, "federated_preds")
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
 site_id <- digest(paste(site_plain_name, sep="::"), algo = "sha1")
@@ -1659,10 +1673,297 @@ write_csv(dplyr::select(pred_vent_race,   all_of(safe_cols)), file.path(out_dir,
 message("Done. Outputs written to: ", normalizePath(out_dir))
 
 
+#===================================================
+# ROC Model Comparisons for SVI Improvement
+#===================================================
+
+scale_exposures <- FALSE
+
+# ==== HELPERS (same as before, with minor robustness tweaks) ====
+build_seq_formulas <- function(outcome, base_term, add_terms) {
+  terms <- c()
+  set_names(
+    map(add_terms, function(x) {
+      terms <<- c(terms, x)
+      as.formula(glue("{outcome} ~ {base_term} + {paste(terms, collapse = ' + ')}"))
+    }) |> (\(lst) c(list(as.formula(glue("{outcome} ~ {base_term}"))), lst))(),
+    nm = c("SVI", paste0("SVI + ", accumulate(add_terms, ~paste(.x, .y, sep = " + "))))
+  )
+}
+
+get_auc <- function(formula, data) {
+  df <- model.frame(formula, data = data, na.action = na.omit)
+  fit <- glm(formula, data = df, family = binomial())
+  preds <- predict(fit, type = "response")
+  y <- df[[all.vars(formula)[1]]]
+  
+  # coerce outcome to {0,1} factor with "0" as control, "1" as case
+  if (is.logical(y)) y <- as.integer(y)
+  if (is.numeric(y)) y <- factor(y, levels = c(0, 1))
+  if (is.factor(y) && !identical(levels(y), c("0","1"))) {
+    y <- fct_relabel(y, as.character)
+    if (!all(levels(y) %in% c("0","1"))) stop("Outcome must be binary (0/1).")
+    y <- fct_drop(y)
+  }
+  
+  roc_obj <- pROC::roc(response = y, predictor = preds, levels = c("0","1"), quiet = TRUE)
+  list(model = fit, roc = roc_obj, auc = as.numeric(pROC::auc(roc_obj)), n = nrow(df))
+}
+
+compare_sequential <- function(roc_list) {
+  tibble(
+    model_prev = names(roc_list)[-length(roc_list)],
+    model_curr = names(roc_list)[-1],
+    p_value    = map2_dbl(roc_list[-length(roc_list)], roc_list[-1],
+                          ~ pROC::roc.test(.x$roc, .y$roc, method = "delong")$p.value),
+    auc_prev   = map_dbl(roc_list[-length(roc_list)], "auc"),
+    auc_curr   = map_dbl(roc_list[-1], "auc"),
+    delta_auc  = auc_curr - auc_prev
+  )
+}
+
+# ==== DATA PREP (optional scaling) ====
+env_terms_all <- c("no2_mean", "pm25_mean", "tmax_mean", "tmin_mean", "prcp_mean", "vp_mean")
+
+present_terms <- env_terms_all[env_terms_all %in% names(arf_exp)]
+missing_terms <- setdiff(env_terms_all, present_terms)
+if (length(missing_terms)) message("Skipping missing variables: ", paste(missing_terms, collapse = ", "))
+
+arf_exp_use <- arf_exp
+if (scale_exposures && length(present_terms)) {
+  arf_exp_use <- arf_exp_use %>%
+    mutate(across(all_of(present_terms), ~ as.numeric(scale(.x)), .names = "{.col}"))
+}
+
+# ==== IN-HOSPITAL MORTALITY ====
+formulas_inhosp <- build_seq_formulas(
+  outcome   = "in_hosp_death",
+  base_term = "svi_overall",
+  add_terms = present_terms
+)
+
+aucs_inhosp <- imap(formulas_inhosp, ~ get_auc(.x, arf_exp_use))
+aucs_inhosp_df <- tibble(
+  model = names(aucs_inhosp),
+  auc   = map_dbl(aucs_inhosp, "auc"),
+  n     = map_dbl(aucs_inhosp, "n")
+)
+
+inhosp_comp <- compare_sequential(aucs_inhosp)
+
+# ==== 30-DAY MORTALITY ====
+formulas_30d <- build_seq_formulas(
+  outcome   = "death_30d",
+  base_term = "svi_overall",
+  add_terms = present_terms
+)
+
+aucs_30d <- imap(formulas_30d, ~ get_auc(.x, arf_exp_use))
+aucs_30d_df <- tibble(
+  model = names(aucs_30d),
+  auc   = map_dbl(aucs_30d, "auc"),
+  n     = map_dbl(aucs_30d, "n")
+)
+
+mort30_comp <- compare_sequential(aucs_30d)
+
+# ==== COMBINE & (OPTIONAL) SAVE ====
+seq_label <- if (scale_exposures) "zscored" else "raw"
+summary_auc <- bind_rows(
+  aucs_inhosp_df  %>% mutate(outcome = "in_hosp_death"),
+  aucs_30d_df     %>% mutate(outcome = "death_30d")
+) %>%
+  relocate(outcome)
+
+summary_comp <- bind_rows(
+  inhosp_comp %>% mutate(outcome = "in_hosp_death"),
+  mort30_comp %>% mutate(outcome = "death_30d")
+) %>% relocate(outcome)
+
+print(summary_auc)
+print(summary_comp)
+
+# Uncomment to write out
+# Correct paths + proper interpolation
+readr::write_csv(
+  summary_auc,
+  file.path(cfg$output_dir, sprintf("auc_sequential_%s.csv", seq_label))
+)
+
+readr::write_csv(
+  summary_comp,
+  file.path(cfg$output_dir, sprintf("auc_diffs_delong_%s.csv", seq_label))
+)
+
+# ---- IN-HOSPITAL DEATH ----
+# Base plot with first model
+plot(aucs_inhosp[[1]]$roc, legacy.axes = TRUE, lwd = 2,
+     main = "ROC: In-hospital Death", col = "#1b9e77")
+# Add the rest
+cols <- c("#1b9e77", "#d95f02", "#7570b3", "#e7298a", "#66a61e", "#e6ab02", "#a6761d")
+for (i in 2:length(aucs_inhosp)) {
+  plot(aucs_inhosp[[i]]$roc, add = TRUE, lwd = 2, col = cols[(i - 1) %% length(cols) + 1])
+}
+legend("topleft",
+       legend = paste0(names(aucs_inhosp), " (AUC=", sprintf("%.3f", sapply(aucs_inhosp, `[[`, "auc")), ")"),
+       col = cols[seq_along(aucs_inhosp)], lwd = 2, cex = 0.85, bty = "n")
+
+# ---- 30-DAY DEATH ----
+plot(aucs_30d[[1]]$roc, legacy.axes = TRUE, lwd = 2,
+     main = "ROC: 30-day Death", col = "#1b9e77")
+for (i in 2:length(aucs_30d)) {
+  plot(aucs_30d[[i]]$roc, add = TRUE, lwd = 2, col = cols[(i - 1) %% length(cols) + 1])
+}
+legend("topleft",
+       legend = paste0(names(aucs_30d), " (AUC=", sprintf("%.3f", sapply(aucs_30d, `[[`, "auc")), ")"),
+       col = cols[seq_along(aucs_30d)], lwd = 2, cex = 0.85, bty = "n")
+
+
+# Helper: convert pROC roc to a tidy df
+roc_to_df <- function(roc_obj, label) {
+  tibble(
+    specificity = rev(roc_obj$specificities),
+    sensitivity = rev(roc_obj$sensitivities)
+  ) %>%
+    mutate(model = label)
+}
+
+# Build tidy data with model names + AUC in label
+fmt_lab <- function(name, auc) paste0(name, " (AUC=", sprintf("%.3f", auc), ")")
+
+inhosp_df <- map2(aucs_inhosp, names(aucs_inhosp), ~ roc_to_df(.x$roc, fmt_lab(.y, .x$auc))) %>%
+  list_rbind() %>%
+  mutate(outcome = "In-hospital Death")
+
+m30_df <- map2(aucs_30d, names(aucs_30d), ~ roc_to_df(.x$roc, fmt_lab(.y, .x$auc))) %>%
+  list_rbind() %>%
+  mutate(outcome = "30-day Death")
+
+roc_long <- bind_rows(inhosp_df, m30_df)
+
+# Order legend by model complexity (SVI → … → +vp_mean)
+model_order <- unique(roc_long$model)
+roc_long$model <- factor(roc_long$model, levels = model_order)
+
+# --- Build short labels with proper plotmath tokens
+shorten_name <- function(x) {
+  x <- str_replace(x, "^SVI \\+ ", "+")
+  x <- str_replace_all(x, "no2_mean",  "NO[2]")
+  x <- str_replace_all(x, "pm25_mean", "PM[2.5]")
+  x <- str_replace_all(x, "tmax_mean", "T[max]")
+  x <- str_replace_all(x, "tmin_mean", "T[min]")
+  x <- str_replace_all(x, "prcp_mean", "Prcp")
+  x <- str_replace_all(x, "vp_mean",   "VP")
+  x
+}
+
+# Build code → label map, plus parsed plotmath expressions
+mk_labels <- function(roc_list) {
+  nms   <- names(roc_list)
+  codes <- paste0("M", seq_along(nms) - 1)
+  aucs  <- map_dbl(roc_list, "auc")
+  short <- ifelse(nms == "SVI", "SVI", shorten_name(nms))
+  
+  # Plotmath expression string: e.g., 'M1:~+NO[2]~plain("(0.536)")'
+  expr_str <- sprintf('%s:~%s~plain("(%.3f)")', codes, short, aucs)
+  tibble(
+    name       = nms,
+    code       = codes,
+    auc        = aucs,
+    label_expr = map(expr_str, ~ parse(text = .x)[[1]])
+  )
+}
+
+labs_inhosp <- mk_labels(aucs_inhosp)
+labs_30d    <- mk_labels(aucs_30d)
+
+# --- Tidy ROC data; use model CODE (M0..M6) as the legend key
+roc_to_df <- function(roc_obj, code) {
+  tibble(
+    specificity = rev(roc_obj$specificities),
+    sensitivity = rev(roc_obj$sensitivities),
+    model       = code
+  )
+}
+
+inhosp_df <- map2(aucs_inhosp, labs_inhosp$code, ~ roc_to_df(.x$roc, .y)) |> list_rbind()
+m30_df    <- map2(aucs_30d,    labs_30d$code,    ~ roc_to_df(.x$roc, .y)) |> list_rbind()
+
+# --- Styling (classic theme)
+style_plot <- function(p) {
+  p +
+    theme_classic(base_size = 12) +
+    theme(
+      legend.position   = "bottom",
+      legend.title      = element_text(size = 10),
+      legend.text       = element_text(size = 9),
+      legend.key.width  = unit(1.1, "lines"),
+      legend.margin     = margin(t = 0, r = 0, b = 0, l = 0),
+      plot.margin       = margin(t = 5, r = 5, b = 35, l = 5)
+    ) +
+    guides(color = guide_legend(ncol = 2, byrow = TRUE))
+}
+
+# --- Plots (with parsed legend labels so NO2, PM2.5, T[max], T[min] render correctly)
+p_inhosp <- style_plot(
+  ggplot(inhosp_df,
+         aes(x = 1 - specificity, y = sensitivity, color = model)) +
+    geom_abline(slope = 1, intercept = 0, linetype = 2, linewidth = 0.5) +
+    geom_line(linewidth = 1) +
+    coord_equal() +
+    labs(
+      title = "ROC Curves: In-hospital Death",
+      x = "1 - Specificity (FPR)",
+      y = "Sensitivity (TPR)",
+      color = "Models"
+    ) +
+    scale_color_discrete(
+      breaks = labs_inhosp$code,
+      labels = labs_inhosp$label_expr
+    )
+)
+
+p_30d <- style_plot(
+  ggplot(m30_df,
+         aes(x = 1 - specificity, y = sensitivity, color = model)) +
+    geom_abline(slope = 1, intercept = 0, linetype = 2, linewidth = 0.5) +
+    geom_line(linewidth = 1) +
+    coord_equal() +
+    labs(
+      title = "ROC Curves: 30-day Death",
+      x = "1 - Specificity (FPR)",
+      y = "Sensitivity (TPR)",
+      color = "Models"
+    ) +
+    scale_color_discrete(
+      breaks = labs_30d$code,
+      labels = labs_30d$label_expr
+    )
+)
+
+p_inhosp
+p_30d
+
+ggsave(
+  file.path(cfg$figures_path, "roc_inhosp_classic.png"),
+  p_inhosp,
+  width = 7, height = 6, dpi = 300
+)
+
+ggsave(
+  file.path(cfg$figures_path, "roc_30d_classic.png"),
+  p_30d,
+  width = 7, height = 6, dpi = 300
+)
+
+
 # =========================
 # Wrap up
 # =========================
 
-message("\n✅ All analyses and figures complete!")
-message("📂 Please delete the csv files with patient data and upload the 'output' folder (including figures, models, and data) to Box.\n")
+message("\n🎯 Cohort identification, linkage, and analyses complete!")
+message("📂 All outputs saved under: ", normalizePath(cfg$output_dir))
+message("   Figures: ", normalizePath(cfg$figures_path))
+message("🔒 Reminder: Remove any local CSVs with patient-level data outside the repo, and upload the 'output' folder to Box.\n")
+
 

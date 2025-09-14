@@ -83,7 +83,7 @@ ICU patients across the US.
 3.  Available ABG and/or continuous pulse oximetry data within ±24h of
     ICU admission.
 
-4.  Residential census tract or county code for environmental data linkage.
+4.  Residential census tract and county code for environmental data linkage.
 
 ***-\> Note that mixed hypoxic and hypercapnic respiratory failure is
 common and should be accounted for.***

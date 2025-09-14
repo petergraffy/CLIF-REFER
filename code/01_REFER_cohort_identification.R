@@ -48,7 +48,8 @@ tables <- c("patient", "hospitalization", "vitals", "labs",
             "microbiology_culture")
 
 # Load configuration utility
-#setwd("~/CLIF-REFER") #<------ set your working directory to the cloned repo path here
+setwd("/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARFVI") #<------ set your working directory to the cloned repo path here
+repo <- getwd()
 source("utils/config.R")
 site_name <- config$site_name
 tables_path <- config$tables_path
@@ -71,7 +72,7 @@ if (length(exts) == 0) exts <- c("csv","parquet","fst")
 ext_pat <- paste0("\\.(", paste(unique(exts), collapse = "|"), ")$")
 
 
-#setwd("~/CLIF_tables") #<------ if your CLIF tables are not in a subfolder or the environment, change your working directory to their path here
+setwd("/Users/saborpete/Desktop/Peter/Postdoc/CLIF") #<------ if your CLIF tables are not in a subfolder or the environment, change your working directory to their path here
 
 # Look for CLIF-ish filenames in this folder OR subfolders
 all_files <- list.files(
@@ -576,12 +577,12 @@ cat("\nLoaded required CLIF tables: ", paste(names(clif_tables), collapse = ", "
 
  # ---------- Output folder ----------
  ts <- format(Sys.time(), "%Y%m%d")
- out_dir <- file.path("output", paste0("run_", SITE_NAME, "_", SYSTEM_TIME))
+ out_dir <- file.path(repo, "output", paste0("run_", SITE_NAME, "_", SYSTEM_TIME))
  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
  
  #  ---------- 1) INCLUDED COHORT ----------
  stopifnot(exists("cohort_min"))
- write_csv(cohort_min, file.path(out_dir, make_name("cohort_inclusion", "csv")))
+ #write_csv(cohort_min, file.path(out_dir, make_name("cohort_inclusion", "csv")))
  
  message("Saved ARF cohort CSV: ",
          file.path(out_dir, make_name("cohort_inclusion", "csv")))
@@ -597,7 +598,7 @@ cat("\nLoaded required CLIF tables: ", paste(names(clif_tables), collapse = ", "
    )
  
  write_csv(excl_breakdown, file.path(out_dir, make_name("exclusion_breakdown", "csv")))
- write_csv(excluded_tbl,   file.path(out_dir, make_name("exclusions_raw", "csv")))
+ #write_csv(excluded_tbl,   file.path(out_dir, make_name("exclusions_raw", "csv")))
  
  message("Saved exclusion breakdown CSV: ",
          file.path(out_dir, make_name("exclusion_breakdown", "csv")))
@@ -845,13 +846,22 @@ if (!exists("make_name")) {
   if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 }
 
-readr::write_csv(
-  cohort_min_periop,
-  file.path(out_dir, make_name("cohort_inclusion_periop", "csv"))
-)
-message("Saved perioperative control cohort CSV: ",
-        file.path(out_dir, make_name("cohort_inclusion_periop", "csv")))
+# readr::write_csv(
+#   cohort_min_periop,
+#   file.path(out_dir, make_name("cohort_inclusion_periop", "csv"))
+# )
+# message("Saved perioperative control cohort CSV: ",
+#         file.path(out_dir, make_name("cohort_inclusion_periop", "csv")))
 
+# =========================
+# Wrap up
+# =========================
+
+keep_vars <- c("clif_tables", "cohort_min", "cohort_min_periop", "repo")
+rm(list = setdiff(ls(envir = .GlobalEnv), keep_vars), envir = .GlobalEnv)
+
+message("\n🎯 Cohort identification complete!")
+message("📂 Next steps: Please immediately run `02_REFER_linkage_analysis.R`.\n")
 
 
 

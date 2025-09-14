@@ -2421,7 +2421,7 @@ stepwise_by_subtype <- function(outcome_var, pretty_outcome, out_stub) {
           breaks = labs_df$code,
           labels = labs_df$expr
         ),
-      ncol_legend = 2
+      ncol_legend = 1
     )
     
     # save figure: <repo>/output/figures/roc_by_subtype_stepwise/<out_stub>/...

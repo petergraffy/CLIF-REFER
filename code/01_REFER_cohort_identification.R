@@ -48,7 +48,7 @@ tables <- c("patient", "hospitalization", "vitals", "labs",
             "microbiology_culture")
 
 # Load configuration utility
-setwd("/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARFVI") #<------ set your working directory to the cloned repo path here
+setwd("~/CLIF-ARFVI") #<------ set your working directory to the cloned repo path here
 repo <- getwd()
 source("utils/config.R")
 site_name <- config$site_name
@@ -72,7 +72,7 @@ if (length(exts) == 0) exts <- c("csv","parquet","fst")
 ext_pat <- paste0("\\.(", paste(unique(exts), collapse = "|"), ")$")
 
 
-setwd("/Users/saborpete/Desktop/Peter/Postdoc/CLIF") #<------ if your CLIF tables are not in a subfolder or the environment, change your working directory to their path here
+setwd("~/CLIF_tables") #<------ if your CLIF tables are not in a subfolder or the environment, change your working directory to their path here
 
 # Look for CLIF-ish filenames in this folder OR subfolders
 all_files <- list.files(

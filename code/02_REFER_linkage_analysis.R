@@ -493,6 +493,45 @@ fit_aki  <- glm(aki_flag  ~ pm25_mean + no2_mean + age + sex_category + race_eth
 tidy_and_save(fit_aki,  "aki_adj",  exponentiate = TRUE)
 
 
+get_model_auc <- function(fit, data, outcome, label = NULL) {
+  # Build the exact complete-case frame used by the model
+  df <- model.frame(formula(fit), data = data, na.action = na.omit)
+  
+  # Preds on those rows
+  p  <- predict(fit, newdata = df, type = "response")
+  y  <- df[[outcome]]
+  
+  # Ensure binary 0/1 with 0 = control, 1 = case
+  if (is.logical(y)) y <- as.integer(y)
+  if (is.numeric(y)) y <- factor(y, levels = c(0,1))
+  if (is.factor(y) && !identical(levels(y), c("0","1"))) {
+    y <- forcats::fct_relabel(y, as.character)
+    y <- forcats::fct_drop(y)
+  }
+  
+  r   <- pROC::roc(response = y, predictor = p, levels = c("0","1"), quiet = TRUE, direction = "<")
+  ci  <- pROC::ci.auc(r)
+  
+  tibble(
+    model   = label %||% deparse1(formula(fit)),
+    outcome = outcome,
+    n       = nrow(df),
+    auc     = as.numeric(pROC::auc(r)),
+    auc_lo  = as.numeric(ci[1]),
+    auc_hi  = as.numeric(ci[3])
+  )
+}
+
+auc_tbl <- bind_rows(
+  get_model_auc(fit_mort_adj,    arf_exp, "in_hosp_death", "In-hospital death (adjusted)"),
+  get_model_auc(fit_mort30_adj,  arf_exp, "death_30d",     "30-day death (adjusted)")
+)
+
+print(auc_tbl)
+
+# Save alongside other outputs (repo-anchored helper)
+save_tbl(auc_tbl, "metrics/auc_adjusted_models")
+
 # ------------------------------------ 8) Plots: NO2 main effects --------------------------------
 ref_sex <- arf_exp %>% count(sex_category, sort = TRUE) %>% slice(1) %>% pull(sex_category)
 ref_re  <- arf_exp %>% count(race_ethnicity_simple, sort = TRUE) %>% slice(1) %>% pull(race_ethnicity_simple)

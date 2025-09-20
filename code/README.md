@@ -4,9 +4,9 @@ This directory contains scripts for the project workflow. The general workflow c
 
 ### General Workflow
 
-0. **In the exposome folder, first unzip the acs_estimates.csv.zip folder and save it in the exposome folder with the other csv files.** Then initialize your R environment using `00_renv_restore`.
+0. First, initialize your R environment using `00_renv_restore`.
 
-1. Run the `01_REFER_cohort_identification.R` script
+1. Run the `01_REFER_cohort_identification.R` script. **Before running this script, be sure to edit line 51 with your working directory path that is the repo root directory**.
    This script should:
    - Apply inclusion and exclusion criteria
    - Select required fields from each table
@@ -23,7 +23,7 @@ Then, **without making any changes to your R environment**, you can run the next
 
 If you accidentally cleared your environment between steps, you can run step 1 again to get the objects back in your environment, or you can re-read the saved csv output from file one in the output folder.
 
-**Once all code has been run, upload the output folder to Box.**
+**Once all code has been run, upload the entire output folder as-is to Box.**
 
 
 

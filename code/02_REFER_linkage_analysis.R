@@ -30,6 +30,7 @@ suppressPackageStartupMessages({
   library(tibble)
   library(forcats)
   library(grid)
+  library(jsonlite)
 })
 
 # ---- 0.1 Load config (YAML or fallback defaults) ----------------------------------------------
@@ -378,8 +379,23 @@ exposome <- svi |>
   left_join(daymet, by = c("GEOID","year"))
 
 # --- NEW: add tract-level ACS ----------------------------------------------
-acs <- readr::read_csv(rpath("exposome", "acs_estimates.csv")) |>
-  # keep only the columns you need and standardize types
+
+# Path to the zip in exposome/
+zip_path <- rpath("exposome", "acs_estimates.csv.zip")  # change name if needed
+
+# Inspect ZIP contents and pick the CSV you want
+zip_files <- unzip(zip_path, list = TRUE)$Name
+csv_inside <- zip_files[grepl("\\.csv$", zip_files, ignore.case = TRUE)]
+
+if (length(csv_inside) == 0) stop("No CSV found inside the ZIP.")
+if (length(csv_inside) > 1) {
+  # prefer a file that looks like ACS, otherwise take the first CSV
+  pick <- csv_inside[grepl("acs|estimate", csv_inside, ignore.case = TRUE)]
+  csv_inside <- if (length(pick)) pick[1] else csv_inside[1]
+}
+
+# Read directly via a connection without extracting
+acs <- readr::read_csv(unz(zip_path, csv_inside)) |>
   transmute(
     year  = as.integer(year),
     geoid = str_pad(as.character(geoid), width = 11, pad = "0"),
@@ -2449,10 +2465,437 @@ print(res_inhosp_sw$best)
 print(res_30d_sw$best)
 
 
+# ------------------------------------ Stratify by AGE CATEGORY ------------------------------------
+
+pred_ci_log <- function(fit, newdata) {
+  pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+  tibble::as_tibble(dplyr::bind_cols(
+    newdata,
+    pred = plogis(pr$fit),
+    lo   = plogis(pr$fit - 1.96 * pr$se.fit),
+    hi   = plogis(pr$fit + 1.96 * pr$se.fit)
+  ))
+}
+pred_ci_nb <- function(fit, newdata) {
+  pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+  tibble::as_tibble(dplyr::bind_cols(
+    newdata,
+    pred = exp(pr$fit),
+    lo   = exp(pr$fit - 1.96 * pr$se.fit),
+    hi   = exp(pr$fit + 1.96 * pr$se.fit)
+  ))
+}
+
+# 1) Create age_category (adjust cutpoints as you like)
+arf_exp <- arf_exp |>
+  mutate(
+    age_category = cut(
+      age,
+      breaks = c(-Inf, 49, 64, 79, Inf),          # <50, 50–64, 65–79, ≥80
+      labels = c("<50", "50–64", "65–79", "≥80"),
+      right = TRUE, include.lowest = TRUE
+    ) |> droplevels()
+  )
+
+# Ensure factors are clean
+arf_exp <- arf_exp |>
+  mutate(
+    arf_subtype = droplevels(arf_subtype),
+    sex_category = droplevels(sex_category),
+    race_ethnicity_simple = droplevels(race_ethnicity_simple),
+    age_category = droplevels(age_category)
+  )
+
+# 2) Fit interaction models: no2 (per 10 ppb) x age_category
+fit_mort_inhosp_age <- glm(
+  in_hosp_death ~ pm25_mean + no2_10*age_category + arf_subtype + sex_category +
+    race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp, family = binomial()
+)
+
+fit_mort_30d_age <- glm(
+  death_30d ~ pm25_mean + no2_10*age_category + arf_subtype + sex_category +
+    race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp, family = binomial()
+)
+
+fit_vent_nb_age <- MASS::glm.nb(
+  vent_hours ~ pm25_mean + no2_10*age_category + arf_subtype + sex_category +
+    race_ethnicity_simple + svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp
+)
+
+# (optional) Save tidy model tables
+tidy_and_save(fit_mort_inhosp_age, "inhosp_death_x_agecat", exponentiate = TRUE)
+tidy_and_save(fit_mort_30d_age,    "death30d_x_agecat",    exponentiate = TRUE)
+tidy_and_save(fit_vent_nb_age,     "vent_hours_x_agecat",  exponentiate = TRUE)
+
+# 3) Build prediction grid (vary no2_10 across observed range; facet by age_category)
+age_lvls <- fit_mort_inhosp_age$xlevels$age_category
+sub_lvls <- fit_mort_inhosp_age$xlevels$arf_subtype
+
+make_grid_age <- function(df, age_lvls, sub_lvls, n = 150) {
+  safe_mean <- function(x) { m <- mean(x, na.rm = TRUE); if (is.nan(m)) NA_real_ else m }
+  top_level <- function(x) {
+    if (is.factor(x)) x <- droplevels(x)
+    tab <- sort(table(x), decreasing = TRUE)
+    if (length(tab) == 0) NA_character_ else names(tab)[1]
+  }
+  rng <- df %>% summarize(
+    lo = quantile(no2_10, 0.01, na.rm = TRUE),
+    hi = quantile(no2_10, 0.99, na.rm = TRUE)
+  )
+  expand.grid(
+    no2_10 = seq(rng$lo, rng$hi, length.out = n),
+    age_category = age_lvls,
+    arf_subtype  = sub_lvls,
+    KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE
+  ) |>
+    as_tibble() |>
+    mutate(
+      pm25_mean             = safe_mean(df$pm25_mean),
+      sex_category          = top_level(df$sex_category),
+      race_ethnicity_simple = top_level(df$race_ethnicity_simple),
+      svi_overall           = safe_mean(df$svi_overall),
+      acs_median_income     = safe_mean(df$acs_median_income),
+      acs_pct_lt_hs         = safe_mean(df$acs_pct_lt_hs),
+      acs_unemp_rate_pct    = safe_mean(df$acs_unemp_rate_pct),
+      acs_pct_insured       = safe_mean(df$acs_pct_insured),
+      
+      # coerce to model factor levels
+      age_category          = factor(age_category, levels = levels(df$age_category)),
+      arf_subtype           = factor(arf_subtype,  levels = levels(df$arf_subtype)),
+      sex_category          = factor(sex_category, levels = levels(df$sex_category)),
+      race_ethnicity_simple = factor(race_ethnicity_simple, levels = levels(df$race_ethnicity_simple))
+    )
+}
+
+grid_age <- make_grid_age(arf_exp, age_lvls, sub_lvls)
+
+# rebuild the three frames using the updated helpers (or keep the quick patch above)
+df_mort_inhosp_age <- pred_ci_log(fit_mort_inhosp_age, grid_age)
+df_mort_30d_age    <- pred_ci_log(fit_mort_30d_age,    grid_age)
+df_vent_age        <- pred_ci_nb (fit_vent_nb_age,     grid_age)
+
+# sanity
+stopifnot(all(c("age_category","arf_subtype","no2_10") %in% names(df_mort_inhosp_age)))
+
+p1_age <- ggplot(df_mort_inhosp_age, aes(no2_10, pred, color = arf_subtype)) +
+  geom_line(size = 1.2) +
+  geom_line(aes(y = lo), linetype = "dashed", alpha = 0.6) +
+  geom_line(aes(y = hi), linetype = "dashed", alpha = 0.6) +
+  facet_wrap(~ age_category) + pal + theme_pub +
+  labs(title = "In-hospital mortality vs NO₂, stratified by age",
+       x = "NO₂ (per 10 ppb)", y = "Predicted probability", color = "ARF subtype")
+
+p2_age <- ggplot(df_mort_30d_age, aes(no2_10, pred, color = arf_subtype)) +
+  geom_line(size = 1.2) +
+  geom_line(aes(y = lo), linetype = "dashed", alpha = 0.6) +
+  geom_line(aes(y = hi), linetype = "dashed", alpha = 0.6) +
+  facet_wrap(~ age_category) + pal + theme_pub +
+  labs(title = "30-day mortality vs NO₂, stratified by age",
+       x = "NO₂ (per 10 ppb)", y = "Predicted probability", color = "ARF subtype")
+
+p3_age <- ggplot(df_vent_age, aes(no2_10, pred, color = arf_subtype)) +
+  geom_line(size = 1.2) +
+  geom_line(aes(y = lo), linetype = "dashed", alpha = 0.6) +
+  geom_line(aes(y = hi), linetype = "dashed", alpha = 0.6) +
+  facet_wrap(~ age_category) + pal + theme_pub +
+  labs(title = "Ventilation hours vs NO₂, stratified by age",
+       x = "NO₂ (per 10 ppb)", y = "Predicted mean hours", color = "ARF subtype")
+
+combo_age <- (p1_age | p2_age) / p3_age + plot_layout(guides = "collect") & theme(legend.position = "bottom")
+save_plot(combo_age, "no2_by_agecat_subtype_combined")
+
+export_glm_spec <- function(fit, name, out_dir = file.path(cfg$output_dir, "federated_specs")) {
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  
+  fam <- family(fit)
+  spec <- list(
+    model_name = name,
+    formula    = deparse1(formula(fit)),
+    family     = fam$family,
+    link       = fam$link,
+    coef       = coef(fit),                 # named vector w/ model.matrix colnames
+    xlevels    = fit$xlevels,               # factor levels used during fit
+    contrasts  = fit$contrasts,             # usually NULL if defaults
+    theta      = if (!is.null(fit$theta)) unname(fit$theta) else NULL
+  )
+  fp <- file.path(out_dir, paste0(cfg$prefix, "_", name, "_spec_", cfg$run_id, ".json"))
+  writeLines(toJSON(spec, pretty = TRUE, auto_unbox = TRUE), fp)
+  invisible(fp)
+}
+
+# export specs for your three adjusted models (examples)
+export_glm_spec(fit_mort_adj,   "inhosp_death_adj")
+export_glm_spec(fit_mort30_adj, "death30d_adj")
+export_glm_spec(fit_vent_nb,    "vent_hours_adj")
+
+arf_exp <- arf_exp |>
+  mutate(
+    covid_period = case_when(
+      index_admit < as.Date("2020-03-01")              ~ "Pre-COVID",
+      index_admit >= as.Date("2020-03-01") & index_admit <= as.Date("2021-12-31") ~ "During COVID",
+      index_admit >= as.Date("2022-01-01")             ~ "Post-COVID",
+      TRUE ~ NA_character_
+    ) |> factor(levels = c("Pre-COVID", "During COVID", "Post-COVID"))
+  )
 
 
+# ========================== COVID ANALYSIS PIPELINE ===========================
 
 
+# --- 0) Helpers this block relies on (safe fallbacks if not already defined) --
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
+if (!exists("pred_ci_log", mode = "function")) {
+  pred_ci_log <- function(fit, newdata) {
+    pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+    tibble::as_tibble(dplyr::bind_cols(
+      newdata,
+      pred = plogis(pr$fit),
+      lo   = plogis(pr$fit - 1.96 * pr$se.fit),
+      hi   = plogis(pr$fit + 1.96 * pr$se.fit)
+    ))
+  }
+}
+if (!exists("pred_ci_nb", mode = "function")) {
+  pred_ci_nb <- function(fit, newdata) {
+    pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+    tibble::as_tibble(dplyr::bind_cols(
+      newdata,
+      pred = exp(pr$fit),
+      lo   = exp(pr$fit - 1.96 * pr$se.fit),
+      hi   = exp(pr$fit + 1.96 * pr$se.fit)
+    ))
+  }
+}
+if (!exists("theme_pub")) {
+  theme_pub <- theme_minimal(base_size = 13) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title = element_text(face = "bold"),
+          legend.position = "bottom",
+          legend.title = element_text(face = "bold"),
+          strip.text = element_text(face = "bold"))
+}
+if (!exists("pal"))      pal      <- scale_color_brewer(palette = "Dark2")
+if (!exists("fill_pal")) fill_pal <- scale_fill_brewer(palette = "Dark2")
+
+# --- 1) Derive covid_period robustly from available date columns --------------
+find_index_date <- function(df) {
+  cand <- c("admission_date", "admission_dttm", "admit_date",
+            "hospitalization_admission_date", "index_admit",
+            "encounter_start_date")
+  have <- cand[cand %in% names(df)]
+  if (length(have) == 0) stop("No admission/index date column found.")
+  x <- df[[have[1]]]
+  if (inherits(x, "POSIXt")) as.Date(x) else as.Date(x)
+}
+
+arf_exp <- arf_exp |>
+  mutate(
+    .index_date = find_index_date(cur_data_all()),
+    covid_period = case_when(
+      .index_date <  as.Date("2020-03-01")                     ~ "Pre-COVID",
+      .index_date >= as.Date("2020-03-01") &
+        .index_date <= as.Date("2021-12-31")                     ~ "During COVID",
+      .index_date >= as.Date("2022-01-01")                     ~ "Post-COVID",
+      TRUE                                                     ~ NA_character_
+    ),
+    covid_period = factor(covid_period, levels = c("Pre-COVID","During COVID","Post-COVID"))
+  )
+
+# Ensure NO2 per 10 ppb exists
+arf_exp <- arf_exp %>% mutate(no2_10 = if (!"no2_10" %in% names(.)) no2_mean/10 else no2_10)
+
+# Reference categories used in plots/grids
+ref_sex <- arf_exp %>% count(sex_category, sort = TRUE) %>% slice(1) %>% pull(sex_category)
+ref_re  <- arf_exp %>% count(race_ethnicity_simple, sort = TRUE) %>% slice(1) %>% pull(race_ethnicity_simple)
+
+# Drop unused levels to stabilize model.matrix
+arf_exp <- arf_exp %>%
+  mutate(
+    arf_subtype = droplevels(arf_subtype),
+    sex_category = droplevels(sex_category),
+    race_ethnicity_simple = droplevels(race_ethnicity_simple),
+    covid_period = droplevels(covid_period)
+  )
+
+# --- 2) Models that ADJUST for covid_period (covariate) -----------------------
+fit_mort_inhosp_covid <- glm(
+  in_hosp_death ~ pm25_mean + no2_10 + covid_period +
+    age + sex_category + race_ethnicity_simple + arf_subtype +
+    svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp, family = binomial()
+)
+fit_mort_30d_covid <- glm(
+  death_30d ~ pm25_mean + no2_10 + covid_period +
+    age + sex_category + race_ethnicity_simple + arf_subtype +
+    svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp, family = binomial()
+)
+fit_icu_nb_covid <- glm.nb(
+  icu_los_days ~ pm25_mean + no2_10 + covid_period +
+    age + sex_category + race_ethnicity_simple + arf_subtype +
+    svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp
+)
+fit_vent_nb_covid <- glm.nb(
+  vent_hours ~ pm25_mean + no2_10 + covid_period +
+    age + sex_category + race_ethnicity_simple + arf_subtype +
+    svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp
+)
+
+tidy_and_save(fit_mort_inhosp_covid, "inhosp_death_adj_plus_covid", exponentiate = TRUE)
+tidy_and_save(fit_mort_30d_covid,    "death30d_adj_plus_covid",    exponentiate = TRUE)
+tidy_and_save(fit_icu_nb_covid,      "icu_los_adj_plus_covid",     exponentiate = TRUE)
+tidy_and_save(fit_vent_nb_covid,     "vent_hours_adj_plus_covid",  exponentiate = TRUE)
+
+# --- 3) Models with NO2 × covid_period INTERACTION ---------------------------
+fit_mort_inhosp_covid_int <- glm(
+  in_hosp_death ~ pm25_mean + no2_10*covid_period +
+    age + sex_category + race_ethnicity_simple + arf_subtype +
+    svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp, family = binomial()
+)
+fit_mort_30d_covid_int <- glm(
+  death_30d ~ pm25_mean + no2_10*covid_period +
+    age + sex_category + race_ethnicity_simple + arf_subtype +
+    svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp, family = binomial()
+)
+fit_icu_nb_covid_int <- glm.nb(
+  icu_los_days ~ pm25_mean + no2_10*covid_period +
+    age + sex_category + race_ethnicity_simple + arf_subtype +
+    svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp
+)
+fit_vent_nb_covid_int <- glm.nb(
+  vent_hours ~ pm25_mean + no2_10*covid_period +
+    age + sex_category + race_ethnicity_simple + arf_subtype +
+    svi_overall + acs_median_income + acs_pct_lt_hs +
+    acs_unemp_rate_pct + acs_pct_insured,
+  data = arf_exp
+)
+
+tidy_and_save(fit_mort_inhosp_covid_int, "inhosp_death_no2_x_covid", exponentiate = TRUE)
+tidy_and_save(fit_mort_30d_covid_int,    "death30d_no2_x_covid",    exponentiate = TRUE)
+tidy_and_save(fit_icu_nb_covid_int,      "icu_los_no2_x_covid",     exponentiate = TRUE)
+tidy_and_save(fit_vent_nb_covid_int,     "vent_hours_no2_x_covid",  exponentiate = TRUE)
+
+# --- 4) Prediction grid & plots by COVID period (using the *interaction* fits) -
+safe_mean <- function(x) { m <- mean(x, na.rm = TRUE); if (is.nan(m)) NA_real_ else m }
+top_level <- function(x) { if (is.factor(x)) x <- droplevels(x); nm <- names(sort(table(x), TRUE)); if (length(nm)) nm[1] else NA_character_ }
+
+cp_lvls <- fit_mort_inhosp_covid_int$xlevels$covid_period
+sub_lvls <- fit_mort_inhosp_covid_int$xlevels$arf_subtype
+
+rng_no2 <- arf_exp %>% summarize(lo = quantile(no2_10, 0.01, na.rm = TRUE),
+                                 hi = quantile(no2_10, 0.99, na.rm = TRUE))
+
+make_grid_covid <- function(df, cp_lvls, sub_lvls, n = 150) {
+  expand.grid(
+    no2_10 = seq(rng_no2$lo, rng_no2$hi, length.out = n),
+    covid_period = cp_lvls,
+    arf_subtype  = sub_lvls,
+    KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE
+  ) %>%
+    tibble::as_tibble() %>%
+    mutate(
+      pm25_mean             = safe_mean(df$pm25_mean),
+      age                   = safe_mean(df$age),
+      sex_category          = top_level(df$sex_category),
+      race_ethnicity_simple = top_level(df$race_ethnicity_simple),
+      svi_overall           = safe_mean(df$svi_overall),
+      acs_median_income     = safe_mean(df$acs_median_income),
+      acs_pct_lt_hs         = safe_mean(df$acs_pct_lt_hs),
+      acs_unemp_rate_pct    = safe_mean(df$acs_unemp_rate_pct),
+      acs_pct_insured       = safe_mean(df$acs_pct_insured),
+      covid_period          = factor(covid_period, levels = levels(df$covid_period)),
+      arf_subtype           = factor(arf_subtype,  levels = levels(df$arf_subtype)),
+      sex_category          = factor(sex_category, levels = levels(df$sex_category)),
+      race_ethnicity_simple = factor(race_ethnicity_simple, levels = levels(df$race_ethnicity_simple))
+    )
+}
+
+grid_covid <- make_grid_covid(arf_exp, cp_lvls, sub_lvls)
+
+# Predictions
+df_mort_inhosp_covid <- pred_ci_log(fit_mort_inhosp_covid_int, grid_covid)
+df_mort_30d_covid    <- pred_ci_log(fit_mort_30d_covid_int,    grid_covid)
+df_icu_covid         <- pred_ci_nb (fit_icu_nb_covid_int,      grid_covid)
+df_vent_covid        <- pred_ci_nb (fit_vent_nb_covid_int,     grid_covid)
+
+# Plots: facet by covid_period, color by ARF subtype
+p1_cov <- ggplot(df_mort_inhosp_covid, aes(no2_10, pred, color = arf_subtype)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi, fill = arf_subtype), alpha = 0.2, color = NA) +
+  geom_line(size = 1.2) +
+  facet_wrap(~ covid_period) + pal + fill_pal + theme_pub +
+  labs(title = "In-hospital mortality vs NO₂ by COVID period",
+       x = "NO₂ (per 10 ppb)", y = "Predicted probability",
+       color = "ARF subtype", fill = "ARF subtype")
+
+p2_cov <- ggplot(df_mort_30d_covid, aes(no2_10, pred, color = arf_subtype)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi, fill = arf_subtype), alpha = 0.2, color = NA) +
+  geom_line(size = 1.2) +
+  facet_wrap(~ covid_period) + pal + fill_pal + theme_pub +
+  labs(title = "30-day mortality vs NO₂ by COVID period",
+       x = "NO₂ (per 10 ppb)", y = "Predicted probability",
+       color = "ARF subtype", fill = "ARF subtype")
+
+p3_cov <- ggplot(df_icu_covid, aes(no2_10, pred, color = arf_subtype)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi, fill = arf_subtype), alpha = 0.2, color = NA) +
+  geom_line(size = 1.2) +
+  facet_wrap(~ covid_period) + pal + fill_pal + theme_pub +
+  labs(title = "ICU LOS vs NO₂ by COVID period",
+       x = "NO₂ (per 10 ppb)", y = "Predicted mean days",
+       color = "ARF subtype", fill = "ARF subtype")
+
+p4_cov <- ggplot(df_vent_covid, aes(no2_10, pred, color = arf_subtype)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi, fill = arf_subtype), alpha = 0.2, color = NA) +
+  geom_line(size = 1.2) +
+  facet_wrap(~ covid_period) + pal + fill_pal + theme_pub +
+  labs(title = "Ventilation hours vs NO₂ by COVID period",
+       x = "NO₂ (per 10 ppb)", y = "Predicted mean hours",
+       color = "ARF subtype", fill = "ARF subtype")
+
+combo_covid <- (p1_cov | p2_cov) / (p3_cov | p4_cov) + patchwork::plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+save_plot(combo_covid, "no2_by_covid_period_combined")
+
+# --- 5) AUCs overall and period-stratified (for adjusted + COVID covariate) ---
+get_model_auc <- get_model_auc  # use your existing version
+
+# Overall AUC (adjusted + covid covariate)
+auc_covid_overall <- dplyr::bind_rows(
+  get_model_auc(fit_mort_inhosp_covid, arf_exp, "in_hosp_death", "In-hospital death | + COVID period"),
+  get_model_auc(fit_mort_30d_covid,    arf_exp, "death_30d",     "30-day death | + COVID period")
+)
+
+# Period-specific AUCs
+auc_covid_by_period <- purrr::map_dfr(levels(arf_exp$covid_period), function(cp) {
+  df_cp <- arf_exp %>% filter(covid_period == cp)
+  dplyr::bind_rows(
+    get_model_auc(fit_mort_inhosp_covid, df_cp, "in_hosp_death", paste0("In-hospital death | ", cp)),
+    get_model_auc(fit_mort_30d_covid,    df_cp, "death_30d",     paste0("30-day death | ", cp))
+  ) %>%
+    mutate(covid_period = cp)
+})
+
+save_tbl(auc_covid_overall,   "metrics/auc_adjusted_plus_covid_overall")
+save_tbl(auc_covid_by_period, "metrics/auc_adjusted_plus_covid_by_period")
 
 
 

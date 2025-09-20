@@ -48,7 +48,7 @@ tables <- c("patient", "hospitalization", "vitals", "labs",
             "microbiology_culture")
 
 # Load configuration utility
-setwd("/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARFVI") #<------ set your working directory to the cloned repo path root directory here
+setwd("/~/CLIF-REFER") #<------ set your working directory to the cloned repo path root directory here
 repo <- getwd()
 source("utils/config.R")
 site_name <- config$site_name

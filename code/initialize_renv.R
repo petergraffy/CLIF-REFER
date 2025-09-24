@@ -19,4 +19,5 @@ pkgs <- unique(pkgs)
 
 # Install and lock
 renv::install(pkgs)
-renv::snapshot(prompt = FALSE)
+renv::settings$snapshot.type("all")
+renv::snapshot(prompt = FALSE) # Then run snapshot again

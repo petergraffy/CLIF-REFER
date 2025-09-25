@@ -1,6 +1,6 @@
 {
     "site_name": "Your_Site_Name",
-    "repo": "/path/to/repo/root_dir/",
+    "repo": "/path/to/repo/root_dir/CLIF-REFER",
     "tables_path": "/path/to/tables/",
     "file_type": "csv/parquet/fst"
 }

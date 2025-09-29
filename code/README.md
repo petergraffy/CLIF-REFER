@@ -20,6 +20,8 @@ Then, **without making any changes to your R environment**, you can run the next
    - Perform project-specific quality control checks on the filtered cohort data.
    - Perform geospatial linkage to exposome features in the accompanied csv files.
    - Perform modeling and return outputs and figures.
+   
+**NOTE**: you might need to update the dev_low object to be device_category and str_detect() "IMV". 
 
 If you accidentally cleared your environment between steps, you can run step 1 again to get the objects back in your environment, or you can re-read the saved csv output from file one in the output folder.
 

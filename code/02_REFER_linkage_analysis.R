@@ -566,7 +566,7 @@ make_grid <- function(df, n = 100) {
     acs_median_income   = mean(df$acs_median_income, na.rm = TRUE),
     acs_pct_lt_hs       = mean(df$acs_pct_lt_hs, na.rm = TRUE),
     acs_unemp_rate_pct  = mean(df$acs_unemp_rate_pct, na.rm = TRUE),
-    acs_pct_insured     = mean(df$acs_pct_insured, na.rm = TRUE),
+    acs_pct_insured     = mean(df$acs_pct_insured, na.rm = TRUE)
   ) %>% mutate(no2_10 = no2_mean / 10)
 }
 grid <- make_grid(arf_exp)
@@ -660,7 +660,7 @@ make_grid_sub <- function(df, n = 150) {
       acs_median_income   = mean(df$acs_median_income, na.rm = TRUE),
       acs_pct_lt_hs       = mean(df$acs_pct_lt_hs, na.rm = TRUE),
       acs_unemp_rate_pct  = mean(df$acs_unemp_rate_pct, na.rm = TRUE),
-      acs_pct_insured     = mean(df$acs_pct_insured, na.rm = TRUE),
+      acs_pct_insured     = mean(df$acs_pct_insured, na.rm = TRUE)
     )
 }
 grid_sub <- make_grid_sub(arf_exp)
@@ -2896,6 +2896,817 @@ auc_covid_by_period <- purrr::map_dfr(levels(arf_exp$covid_period), function(cp)
 
 save_tbl(auc_covid_overall,   "metrics/auc_adjusted_plus_covid_overall")
 save_tbl(auc_covid_by_period, "metrics/auc_adjusted_plus_covid_by_period")
+
+
+# =========================== SHORT-TERM (12m prior) FOR BOTH POLLUTANTS ==========================
+# Reuses your rpath(), arf_exp (has patient_id, index_admit, index_year, county)
+# NO2 monthly file is already available; PM2.5 monthly is optional (fallback to annual).
+
+# -- 0) Normalize patient keys & dates
+arf_exp <- arf_exp %>%
+  mutate(
+    GEOID       = stringr::str_pad(as.character(county_code.x), 5, pad = "0"),
+    index_admit = as.Date(index_admit),
+    admit_month = lubridate::floor_date(index_admit, "month"),
+    start_12m   = admit_month %m-% months(12L),
+    end_12m     = admit_month %m-% months(1L)
+  )
+
+# -- 1) NO2 monthly -> 12m pre-admit mean
+no2_m <- readr::read_csv(rpath("exposome", "no2_county_month.csv")) %>%
+  janitor::clean_names() %>%
+  mutate(
+    geoid   = stringr::str_pad(as.character(county_fips), 5, pad = "0"),
+    year    = as.integer(year),
+    month   = as.integer(month),
+    ym_date = suppressWarnings(lubridate::make_date(year, month, 1))
+  )
+
+no2_val_col <- intersect(names(no2_m), c("no2_ppb","no2_mean","no2","value"))[1]
+stopifnot(!is.na(no2_val_col))
+no2_m <- no2_m %>% transmute(geoid, ym_date, no2_val = .data[[no2_val_col]])
+
+# -- 2) PM2.5 monthly if present; else “monthly” from annual file
+pm25_month_path <- rpath("exposome", "pm25_county_month.csv")
+if (file.exists(pm25_month_path)) {
+  pm25_m <- readr::read_csv(pm25_month_path) %>%
+    janitor::clean_names() %>%
+    mutate(
+      geoid   = stringr::str_pad(as.character(county_id), 5, pad = "0"),
+      year    = as.integer(year),
+      month   = as.integer(month),
+      ym_date = suppressWarnings(lubridate::make_date(year, month, 1))
+    )
+  pm25_val_col <- names(pm25_m)[stringr::str_detect(names(pm25_m), "(pm\\s*2?5|pm25)")][1]
+  stopifnot(!is.na(pm25_val_col))
+  pm25_m <- pm25_m %>% transmute(geoid, ym_date, pm25_val = as.numeric(.data[[pm25_val_col]]))
+} else {
+  # Fallback: expand your annual PM2.5 to monthly (flat within year)
+  pm25_clean <- pm25 %>%
+    janitor::clean_names() %>%
+    mutate(
+      geoid = stringr::str_pad(as.character(county_id), 5, pad = "0"),
+      year  = as.integer(year)
+    )
+  pm25_cols <- names(pm25_clean)[stringr::str_detect(names(pm25_clean), "(pm\\s*2?5|pm25)")]
+  pm25_cols <- pm25_cols[vapply(pm25_cols, function(nm) is.numeric(pm25_clean[[nm]]), logical(1))]
+  stopifnot(length(pm25_cols) > 0)
+  pm25_pick <- (pm25_cols[stringr::str_detect(pm25_cols, "mean|annual|avg")])[1] %||% pm25_cols[1]
+  
+  pm25_year <- pm25_clean %>% transmute(geoid, year, pm25_val = .data[[pm25_pick]])
+  pm25_m <- tidyr::crossing(pm25_year, month = 1:12) %>%
+    mutate(ym_date = suppressWarnings(lubridate::make_date(year, month, 1))) %>%
+    transmute(geoid, ym_date, pm25_val)
+}
+
+# -- 3) Helper: patient-month expansion
+pat_months <- arf_exp %>%
+  dplyr::select(patient_id, GEOID, start_12m, end_12m) %>%
+  rowwise() %>%
+  mutate(ym_date = list(seq.Date(start_12m, end_12m, by = "month"))) %>%
+  tidyr::unnest(ym_date) %>%
+  ungroup()
+
+# -- 4) Compute 12m means + completeness
+no2_12m <- pat_months %>%
+  left_join(no2_m, by = c("GEOID" = "geoid", "ym_date" = "ym_date")) %>%
+  group_by(patient_id) %>%
+  summarise(no2_12m_mean = mean(no2_val, na.rm = TRUE),
+            n_no2_m = sum(!is.na(no2_val)), .groups = "drop")
+
+pm25_12m <- pat_months %>%
+  left_join(pm25_m, by = c("GEOID" = "geoid", "ym_date" = "ym_date")) %>%
+  group_by(patient_id) %>%
+  summarise(pm25_12m_mean = mean(pm25_val, na.rm = TRUE),
+            n_pm25_m = sum(!is.na(pm25_val)), .groups = "drop")
+
+arf_exp <- arf_exp %>%
+  left_join(no2_12m,  by = "patient_id") %>%
+  left_join(pm25_12m, by = "patient_id") %>%
+  mutate(
+    no2_12m_complete  = n_no2_m  >= 10L,
+    pm25_12m_complete = n_pm25_m >= 10L
+  )
+
+# =========================== CUMULATIVE (2018 → index_year) FOR BOTH POLLUTANTS ==================
+cummean_na <- function(x) { cs <- cumsum(replace_na(x, 0)); n <- cumsum(!is.na(x)); ifelse(n > 0, cs/n, NA_real_) }
+
+# Annual NO2 cumulative (uses your 'no2' table from Section 5)
+no2_clean_y <- no2 %>%
+  janitor::clean_names() %>%
+  mutate(
+    geoid = stringr::str_pad(as.character(geoid), 5, pad = "0"),
+    year  = as.integer(year)
+  )
+no2_cols_y <- names(no2_clean_y)[stringr::str_detect(names(no2_clean_y), "no2")]
+no2_cols_y <- no2_cols_y[vapply(no2_cols_y, function(nm) is.numeric(no2_clean_y[[nm]]), logical(1))]
+stopifnot(length(no2_cols_y) > 0)
+no2_pick_y <- (no2_cols_y[stringr::str_detect(no2_cols_y, "mean|annual|avg|ppb")])[1] %||% no2_cols_y[1]
+
+no2_cum <- no2_clean_y %>%
+  transmute(GEOID = geoid, year, no2_val = .data[[no2_pick_y]]) %>%
+  filter(year >= 2018) %>%
+  arrange(GEOID, year) %>%
+  group_by(GEOID) %>%
+  mutate(no2_mean_cummean_2018toYr = cummean_na(no2_val)) %>%
+  ungroup() %>%
+  dplyr::select(GEOID, year, no2_mean_cummean_2018toYr)
+
+# Annual PM2.5 cumulative (if not already added)
+pm25_clean_y <- pm25 %>%
+  janitor::clean_names() %>%
+  mutate(
+    geoid = stringr::str_pad(as.character(geoid), 5, pad = "0"),
+    year  = as.integer(year)
+  )
+pm25_cols_y <- names(pm25_clean_y)[stringr::str_detect(names(pm25_clean_y), "(pm\\s*2?5|pm25)")]
+pm25_cols_y <- pm25_cols_y[vapply(pm25_cols_y, function(nm) is.numeric(pm25_clean_y[[nm]]), logical(1))]
+stopifnot(length(pm25_cols_y) > 0)
+pm25_pick_y <- (pm25_cols_y[stringr::str_detect(pm25_cols_y, "mean|annual|avg")])[1] %||% pm25_cols_y[1]
+
+pm25_cum <- pm25_clean_y %>%
+  transmute(GEOID = geoid, year, pm25_val = .data[[pm25_pick_y]]) %>%
+  filter(year >= 2018) %>%
+  arrange(GEOID, year) %>%
+  group_by(GEOID) %>%
+  mutate(pm25_mean_cummean_2018toYr = cummean_na(pm25_val)) %>%
+  ungroup() %>%
+  dplyr::select(GEOID, year, pm25_mean_cummean_2018toYr)
+
+# Join both cumulative metrics to patients by county-year
+arf_exp <- arf_exp %>%
+  mutate(index_year = as.integer(index_year)) %>%
+  left_join(no2_cum,  by = c("GEOID" = "GEOID", "index_year" = "year")) %>%
+  left_join(pm25_cum, by = c("GEOID" = "GEOID", "index_year" = "year"))
+
+stopifnot(all(c("pm25_12m_mean","no2_12m_mean",
+                "pm25_mean_cummean_2018toYr","no2_mean_cummean_2018toYr") %in% names(arf_exp)))
+
+# ===================================== MODELS =====================================
+# Covariates (same set you’ve been using)
+adj_vars <- c("age","sex_category","race_ethnicity_simple",
+              "svi_overall","acs_median_income","acs_pct_lt_hs",
+              "acs_unemp_rate_pct","acs_pct_insured")
+
+# -- A) Short-term window model (12m), two-pollutant, NO INTERACTION, year FE
+form_short <- reformulate(
+  c("pm25_12m_mean","no2_12m_mean", adj_vars, "factor(index_year)"),
+  response = "in_hosp_death"
+)
+fit_inhosp_short <- glm(form_short, data = arf_exp, family = binomial())
+tidy_and_save(fit_inhosp_short, "inhosp_shortterm_12m_PM25_NO2_noINT", exponentiate = TRUE)
+
+form_short_30d <- update(form_short, death_30d ~ .)
+fit_30d_short  <- glm(form_short_30d, data = arf_exp, family = binomial())
+tidy_and_save(fit_30d_short, "death30d_shortterm_12m_PM25_NO2_noINT", exponentiate = TRUE)
+
+form_short_icu <- reformulate(
+  c("pm25_12m_mean","no2_12m_mean", adj_vars, "factor(index_year)"),
+  response = "icu_los_days"
+)
+fit_icu_short  <- MASS::glm.nb(form_short_icu, data = arf_exp)
+tidy_and_save(fit_icu_short, "icuLOS_shortterm_12m_PM25_NO2_noINT", exponentiate = TRUE)
+
+form_short_vent <- update(form_short_icu, vent_hours ~ .)
+fit_vent_short  <- MASS::glm.nb(form_short_vent, data = arf_exp)
+tidy_and_save(fit_vent_short, "ventHrs_shortterm_12m_PM25_NO2_noINT", exponentiate = TRUE)
+
+# -- B) Cumulative-only models (SEPARATE models per pollutant), year FE
+# PM2.5 cumulative only
+form_cum_pm25 <- reformulate(
+  c("pm25_mean_cummean_2018toYr", adj_vars, "factor(index_year)"),
+  response = "in_hosp_death"
+)
+fit_inhosp_cum_pm25 <- glm(form_cum_pm25, data = arf_exp, family = binomial())
+tidy_and_save(fit_inhosp_cum_pm25, "inhosp_cumulative_PM25_only", exponentiate = TRUE)
+
+fit_30d_cum_pm25 <- glm(update(form_cum_pm25, death_30d ~ .), data = arf_exp, family = binomial())
+tidy_and_save(fit_30d_cum_pm25, "death30d_cumulative_PM25_only", exponentiate = TRUE)
+
+fit_icu_cum_pm25 <- MASS::glm.nb(update(form_cum_pm25, icu_los_days ~ .), data = arf_exp)
+tidy_and_save(fit_icu_cum_pm25, "icuLOS_cumulative_PM25_only", exponentiate = TRUE)
+
+fit_vent_cum_pm25 <- MASS::glm.nb(update(form_cum_pm25, vent_hours ~ .), data = arf_exp)
+tidy_and_save(fit_vent_cum_pm25, "ventHrs_cumulative_PM25_only", exponentiate = TRUE)
+
+# NO2 cumulative only
+form_cum_no2 <- reformulate(
+  c("no2_mean_cummean_2018toYr", adj_vars, "factor(index_year)"),
+  response = "in_hosp_death"
+)
+fit_inhosp_cum_no2 <- glm(form_cum_no2, data = arf_exp, family = binomial())
+tidy_and_save(fit_inhosp_cum_no2, "inhosp_cumulative_NO2_only", exponentiate = TRUE)
+
+fit_30d_cum_no2 <- glm(update(form_cum_no2, death_30d ~ .), data = arf_exp, family = binomial())
+tidy_and_save(fit_30d_cum_no2, "death30d_cumulative_NO2_only", exponentiate = TRUE)
+
+fit_icu_cum_no2 <- MASS::glm.nb(update(form_cum_no2, icu_los_days ~ .), data = arf_exp)
+tidy_and_save(fit_icu_cum_no2, "icuLOS_cumulative_NO2_only", exponentiate = TRUE)
+
+fit_vent_cum_no2 <- MASS::glm.nb(update(form_cum_no2, vent_hours ~ .), data = arf_exp)
+tidy_and_save(fit_vent_cum_no2, "ventHrs_cumulative_NO2_only", exponentiate = TRUE)
+
+# ============================= PLOTTING: SHORT-TERM & CUMULATIVE ================================
+
+# -- Helpers (use if not already defined elsewhere) ---------------------------------------------
+if (!exists("pred_ci_log", mode = "function")) {
+  pred_ci_log <- function(fit, newdata) {
+    pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+    dplyr::bind_cols(newdata,
+                     pred = plogis(pr$fit),
+                     lo   = plogis(pr$fit - 1.96 * pr$se.fit),
+                     hi   = plogis(pr$fit + 1.96 * pr$se.fit)
+    )
+  }
+}
+if (!exists("pred_ci_nb", mode = "function")) {
+  pred_ci_nb <- function(fit, newdata) {
+    pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+    dplyr::bind_cols(newdata,
+                     pred = exp(pr$fit),
+                     lo   = exp(pr$fit - 1.96 * pr$se.fit),
+                     hi   = exp(pr$fit + 1.96 * pr$se.fit)
+    )
+  }
+}
+
+# Most common level for a factor; mean for numeric (NA-safe)
+.top_level <- function(x) { if (is.factor(x)) x <- droplevels(x)
+tb <- sort(table(x), decreasing = TRUE); if (length(tb)) names(tb)[1] else NA_character_ }
+.safe_mean <- function(x) { m <- mean(x, na.rm = TRUE); if (is.nan(m)) NA_real_ else m }
+
+# Build a prediction grid for a single "xvar" while holding other covariates fixed
+make_grid_for <- function(df, fit, xvar, xlab = NULL, n = 160, other_fixed = list()) {
+  `%||%` <- function(a, b) if (!is.null(a)) a else b
+  .top_level <- function(x) { if (is.factor(x)) x <- droplevels(x); tb <- sort(table(x), TRUE); if (length(tb)) names(tb)[1] else NA_character_ }
+  .safe_mean <- function(x) { m <- mean(x, na.rm = TRUE); if (is.nan(m)) NA_real_ else m }
+  
+  # range of the focal predictor (1st–99th pct to avoid outliers)
+  rng <- df %>% dplyr::summarize(
+    lo = quantile(.data[[xvar]], 0.01, na.rm = TRUE),
+    hi = quantile(.data[[xvar]], 0.99, na.rm = TRUE)
+  )
+  base <- tibble::tibble("{xvar}" := seq(rng$lo, rng$hi, length.out = n))
+  
+  # terms on the RHS
+  f_terms <- attr(terms(fit), "term.labels")
+  
+  # unwrap things like factor(index_year) -> index_year
+  raw_vars <- ifelse(grepl("\\(", f_terms),
+                     sub(".*\\((.*)\\).*", "\\1", f_terms),
+                     f_terms)
+  # ensure index_year is present if factor(index_year) used
+  if (any(grepl("^factor\\s*\\(\\s*index_year\\s*\\)$", f_terms))) {
+    raw_vars <- union(raw_vars, "index_year")
+  }
+  raw_vars <- unique(raw_vars)
+  
+  # choose a valid reference year
+  mode_year <- function() {
+    lev <- fit$xlevels[["factor(index_year)"]]
+    if (!is.null(lev)) {
+      yr <- suppressWarnings(as.integer(lev[1]))
+      if (!is.na(yr)) return(yr)
+    }
+    yy <- as.integer(df$index_year)
+    yy <- yy[is.finite(yy)]
+    if (!length(yy)) return(2020L)
+    as.integer(names(sort(table(yy), decreasing = TRUE))[1])
+  }
+  
+  add_fixed <- function(var) {
+    if (var %in% names(base)) return()
+    if (var %in% names(other_fixed)) { base[[var]] <<- other_fixed[[var]]; return() }
+    
+    if (identical(var, "index_year")) { base[[var]] <<- mode_year(); return() }
+    
+    if (var %in% names(df)) {
+      if (is.numeric(df[[var]])) {
+        base[[var]] <<- .safe_mean(df[[var]])
+      } else {
+        base[[var]] <<- .top_level(df[[var]])
+        base[[var]] <<- factor(base[[var]], levels = levels(df[[var]]))
+      }
+    }
+  }
+  for (v in raw_vars) add_fixed(v)
+  
+  # Coerce factor covariates to the model’s xlevels (skip factor(index_year) since we supply raw year)
+  if (!is.null(fit$xlevels)) {
+    for (nm in names(fit$xlevels)) {
+      if (nm == "factor(index_year)") next
+      if (nm %in% names(base)) base[[nm]] <- factor(base[[nm]], levels = fit$xlevels[[nm]])
+    }
+  }
+  
+  attr(base, "xlab") <- xlab %||% xvar
+  base
+}
+
+# Generic single-predictor plot (ribbon + line)
+plot_pred <- function(df_pred, xvar, ylab, title) {
+  ggplot(df_pred, aes(x = .data[[xvar]], y = pred)) +
+    geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.20) +
+    geom_line(linewidth = 1.2) +
+    labs(x = attr(df_pred, "xlab") %||% xvar, y = ylab, title = title) +
+    theme_classic(base_size = 13)
+}
+
+# Axis labels
+xl_pm25_short <- expression("PM"[2.5]*" 12-mo mean ("*mu*"g/m"^3*")")
+xl_no2_short  <- expression("NO"[2]*" 12-mo mean (ppb)")
+xl_pm25_cum   <- expression("PM"[2.5]*" cumulative 2018→index ("*mu*"g/m"^3*")")
+xl_no2_cum    <- expression("NO"[2]*" cumulative 2018→index (ppb)")
+
+# ========================== 1) SHORT-TERM (12m) — PM2.5 (hold NO2 at mean) ======================
+stopifnot(exists("fit_inhosp_short"), exists("fit_30d_short"), exists("fit_icu_short"), exists("fit_vent_short"))
+other_short_pm25 <- list(
+  no2_12m_mean = mean(arf_exp$no2_12m_mean, na.rm = TRUE)
+)
+# Short-term PM2.5 (holding NO2 at mean)
+grid_pm25_12m <- make_grid_for(
+  df = arf_exp, fit = fit_inhosp_short,
+  xvar = "pm25_12m_mean",
+  xlab = expression("PM"[2.5]*" 12-mo mean ("*mu*"g/m"^3*")"),
+  other_fixed = list(no2_12m_mean = mean(arf_exp$no2_12m_mean, na.rm = TRUE))
+)
+
+# Short-term NO2 (holding PM2.5 at mean)
+grid_no2_12m <- make_grid_for(
+  df = arf_exp, fit = fit_inhosp_short,
+  xvar = "no2_12m_mean",
+  xlab = expression("NO"[2]*" 12-mo mean (ppb)"),
+  other_fixed = list(pm25_12m_mean = mean(arf_exp$pm25_12m_mean, na.rm = TRUE))
+)
+
+# Cumulative PM2.5
+grid_pm25_cum <- make_grid_for(
+  df = arf_exp, fit = fit_inhosp_cum_pm25,
+  xvar = "pm25_mean_cummean_2018toYr",
+  xlab = expression("PM"[2.5]*" cumulative 2018→index ("*mu*"g/m"^3*")")
+)
+
+# Cumulative NO2
+grid_no2_cum <- make_grid_for(
+  df = arf_exp, fit = fit_inhosp_cum_no2,
+  xvar = "no2_mean_cummean_2018toYr",
+  xlab = expression("NO"[2]*" cumulative 2018→index (ppb)")
+)
+
+
+p_inhosp_pm25_12m <- pred_ci_log(fit_inhosp_short, grid_pm25_12m) %>%
+  plot_pred("pm25_12m_mean", "Predicted probability", "In-hospital mortality vs PM\u2082\u00B7\u2085 (12-mo)")
+
+p_30d_pm25_12m <- pred_ci_log(fit_30d_short, grid_pm25_12m) %>%
+  plot_pred("pm25_12m_mean", "Predicted probability", "30-day mortality vs PM\u2082\u00B7\u2085 (12-mo)")
+
+p_icu_pm25_12m <- pred_ci_nb(fit_icu_short, grid_pm25_12m) %>%
+  plot_pred("pm25_12m_mean", "Predicted mean days", "ICU LOS vs PM\u2082\u00B7\u2085 (12-mo)")
+
+p_vent_pm25_12m <- pred_ci_nb(fit_vent_short, grid_pm25_12m) %>%
+  plot_pred("pm25_12m_mean", "Predicted mean hours", "Vent hours vs PM\u2082\u00B7\u2085 (12-mo)")
+
+combo_pm25_12m <- (p_inhosp_pm25_12m | p_30d_pm25_12m) / (p_icu_pm25_12m | p_vent_pm25_12m)
+save_plot(combo_pm25_12m, "short_PM25_vs_outcomes", w = 11, h = 9)
+
+# ========================== 2) SHORT-TERM (12m) — NO2 (hold PM2.5 at mean) ======================
+other_short_no2 <- list(
+  pm25_12m_mean = mean(arf_exp$pm25_12m_mean, na.rm = TRUE)
+)
+
+
+p_inhosp_no2_12m <- pred_ci_log(fit_inhosp_short, grid_no2_12m) %>%
+  plot_pred("no2_12m_mean", "Predicted probability", "In-hospital mortality vs NO\u2082 (12-mo)")
+
+p_30d_no2_12m <- pred_ci_log(fit_30d_short, grid_no2_12m) %>%
+  plot_pred("no2_12m_mean", "Predicted probability", "30-day mortality vs NO\u2082 (12-mo)")
+
+p_icu_no2_12m <- pred_ci_nb(fit_icu_short, grid_no2_12m) %>%
+  plot_pred("no2_12m_mean", "Predicted mean days", "ICU LOS vs NO\u2082 (12-mo)")
+
+p_vent_no2_12m <- pred_ci_nb(fit_vent_short, grid_no2_12m) %>%
+  plot_pred("no2_12m_mean", "Predicted mean hours", "Vent hours vs NO\u2082 (12-mo)")
+
+combo_no2_12m <- (p_inhosp_no2_12m | p_30d_no2_12m) / (p_icu_no2_12m | p_vent_no2_12m)
+save_plot(combo_no2_12m, "short_NO2_vs_outcomes", w = 11, h = 9)
+
+# ========================== 3) CUMULATIVE — PM2.5 (2018→index-year) ==============================
+stopifnot(exists("fit_inhosp_cum_pm25"), exists("fit_30d_cum_pm25"), exists("fit_icu_cum_pm25"), exists("fit_vent_cum_pm25"))
+
+
+
+p_inhosp_pm25_cum <- pred_ci_log(fit_inhosp_cum_pm25, grid_pm25_cum) %>%
+  plot_pred("pm25_mean_cummean_2018toYr", "Predicted probability", "In-hospital mortality vs PM\u2082\u00B7\u2085 (cumulative)")
+
+p_30d_pm25_cum <- pred_ci_log(fit_30d_cum_pm25, grid_pm25_cum) %>%
+  plot_pred("pm25_mean_cummean_2018toYr", "Predicted probability", "30-day mortality vs PM\u2082\u00B7\u2085 (cumulative)")
+
+p_icu_pm25_cum <- pred_ci_nb(fit_icu_cum_pm25, grid_pm25_cum) %>%
+  plot_pred("pm25_mean_cummean_2018toYr", "Predicted mean days", "ICU LOS vs PM\u2082\u00B7\u2085 (cumulative)")
+
+p_vent_pm25_cum <- pred_ci_nb(fit_vent_cum_pm25, grid_pm25_cum) %>%
+  plot_pred("pm25_mean_cummean_2018toYr", "Predicted mean hours", "Vent hours vs PM\u2082\u00B7\u2085 (cumulative)")
+
+combo_pm25_cum <- (p_inhosp_pm25_cum | p_30d_pm25_cum) / (p_icu_pm25_cum | p_vent_pm25_cum)
+save_plot(combo_pm25_cum, "cumulative_PM25_vs_outcomes", w = 11, h = 9)
+
+# ========================== 4) CUMULATIVE — NO2 (2018→index-year) ================================
+stopifnot(exists("fit_inhosp_cum_no2"), exists("fit_30d_cum_no2"), exists("fit_icu_cum_no2"), exists("fit_vent_cum_no2"))
+
+
+
+p_inhosp_no2_cum <- pred_ci_log(fit_inhosp_cum_no2, grid_no2_cum) %>%
+  plot_pred("no2_mean_cummean_2018toYr", "Predicted probability", "In-hospital mortality vs NO\u2082 (cumulative)")
+
+p_30d_no2_cum <- pred_ci_log(fit_30d_cum_no2, grid_no2_cum) %>%
+  plot_pred("no2_mean_cummean_2018toYr", "Predicted probability", "30-day mortality vs NO\u2082 (cumulative)")
+
+p_icu_no2_cum <- pred_ci_nb(fit_icu_cum_no2, grid_no2_cum) %>%
+  plot_pred("no2_mean_cummean_2018toYr", "Predicted mean days", "ICU LOS vs NO\u2082 (cumulative)")
+
+p_vent_no2_cum <- pred_ci_nb(fit_vent_cum_no2, grid_no2_cum) %>%
+  plot_pred("no2_mean_cummean_2018toYr", "Predicted mean hours", "Vent hours vs NO\u2082 (cumulative)")
+
+combo_no2_cum <- (p_inhosp_no2_cum | p_30d_no2_cum) / (p_icu_no2_cum | p_vent_no2_cum)
+save_plot(combo_no2_cum, "cumulative_NO2_vs_outcomes", w = 11, h = 9)
+
+
+# =============================== NO2 DECILE → ICU SURVIVAL PLOT ================================
+# Survival here = 1 - in_hosp_death (approx. "ICU survival" given available outcome)
+# Works with short-term NO2 (no2_12m_mean) if present; otherwise falls back to cumulative NO2.
+
+# --- Pick exposure + model (short-term preferred) ---
+no2_var <- dplyr::case_when(
+  "no2_12m_mean" %in% names(arf_exp) ~ "no2_12m_mean",
+  "no2_mean_cummean_2018toYr" %in% names(arf_exp) ~ "no2_mean_cummean_2018toYr",
+  TRUE ~ NA_character_
+)
+stopifnot(!is.na(no2_var))
+
+fit_for_adj <- if (no2_var == "no2_12m_mean") {
+  stopifnot(exists("fit_inhosp_short"))
+  fit_inhosp_short
+} else {
+  stopifnot(exists("fit_inhosp_cum_no2"))
+  fit_inhosp_cum_no2
+}
+
+# --- Helper: if you already defined pred_ci_log() & make_grid_for(), we use them; else define ---
+if (!exists("pred_ci_log", mode = "function")) {
+  pred_ci_log <- function(fit, newdata) {
+    pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+    dplyr::bind_cols(newdata,
+                     pred = plogis(pr$fit),
+                     lo   = plogis(pr$fit - 1.96 * pr$se.fit),
+                     hi   = plogis(pr$fit + 1.96 * pr$se.fit)
+    )
+  }
+}
+if (!exists("make_grid_for", mode = "function")) {
+  # Safe builder that respects factor(index_year) and uses a real year level
+  make_grid_for <- function(df, fit, xvar, xlab = NULL, n = 160, other_fixed = list()) {
+    `%||%` <- function(a, b) if (!is.null(a)) a else b
+    .top_level <- function(x) { if (is.factor(x)) x <- droplevels(x); tb <- sort(table(x), TRUE); if (length(tb)) names(tb)[1] else NA_character_ }
+    .safe_mean <- function(x) { m <- mean(x, na.rm = TRUE); if (is.nan(m)) NA_real_ else m }
+    rng <- df %>% dplyr::summarize(lo = quantile(.data[[xvar]], 0.01, na.rm = TRUE),
+                                   hi = quantile(.data[[xvar]], 0.99, na.rm = TRUE))
+    base <- tibble::tibble("{xvar}" := seq(rng$lo, rng$hi, length.out = n))
+    f_terms <- attr(terms(fit), "term.labels")
+    raw_vars <- ifelse(grepl("\\(", f_terms), sub(".*\\((.*)\\).*", "\\1", f_terms), f_terms)
+    if (any(grepl("^factor\\s*\\(\\s*index_year\\s*\\)$", f_terms))) raw_vars <- union(raw_vars, "index_year")
+    raw_vars <- unique(raw_vars)
+    mode_year <- function() {
+      lev <- fit$xlevels[["factor(index_year)"]]
+      if (!is.null(lev)) { yr <- suppressWarnings(as.integer(lev[1])); if (!is.na(yr)) return(yr) }
+      yy <- as.integer(df$index_year); yy <- yy[is.finite(yy)]
+      if (!length(yy)) return(2020L)
+      as.integer(names(sort(table(yy), TRUE))[1])
+    }
+    add_fixed <- function(var) {
+      if (var %in% names(base)) return()
+      if (var %in% names(other_fixed)) { base[[var]] <<- other_fixed[[var]]; return() }
+      if (identical(var, "index_year")) { base[[var]] <<- mode_year(); return() }
+      if (var %in% names(df)) {
+        if (is.numeric(df[[var]])) base[[var]] <<- .safe_mean(df[[var]])
+        else { base[[var]] <<- .top_level(df[[var]]); base[[var]] <<- factor(base[[var]], levels = levels(df[[var]])) }
+      }
+    }
+    for (v in raw_vars) add_fixed(v)
+    if (!is.null(fit$xlevels)) {
+      for (nm in names(fit$xlevels)) {
+        if (nm == "factor(index_year)") next
+        if (nm %in% names(base)) base[[nm]] <- factor(base[[nm]], levels = fit$xlevels[[nm]])
+      }
+    }
+    attr(base, "xlab") <- xlab %||% xvar; base
+  }
+}
+
+# --- Data (restrict to complete 12m if available) ---
+dat_no2 <- arf_exp %>%
+  { if (no2_var == "no2_12m_mean" && "no2_12m_complete" %in% names(.)) dplyr::filter(., no2_12m_complete) else . } %>%
+  dplyr::filter(!is.na(.data[[no2_var]]), !is.na(in_hosp_death)) %>%
+  dplyr::mutate(survival = 1 - in_hosp_death)
+
+# --- Compute deciles & unadjusted survival with normal-approx CI (fast & fine for n>~30/decile) ---
+dec_tbl <- dat_no2 %>%
+  dplyr::mutate(no2_decile = dplyr::ntile(.data[[no2_var]], 10L)) %>%
+  dplyr::group_by(no2_decile) %>%
+  dplyr::summarise(
+    n          = dplyr::n(),
+    surv_mean  = mean(survival),
+    se         = sqrt(pmax(1e-12, surv_mean*(1 - surv_mean) / n)),
+    surv_lo    = pmax(0, surv_mean - 1.96*se),
+    surv_hi    = pmin(1, surv_mean + 1.96*se),
+    no2_center = mean(.data[[no2_var]], na.rm = TRUE),   # decile center for adjusted preds
+    .groups = "drop"
+  )
+
+# --- Adjusted predictions at the decile centers (hold other covariates at typical values) ---
+other_fixed <- list()
+if (no2_var == "no2_12m_mean" && "pm25_12m_mean" %in% names(arf_exp)) {
+  other_fixed$pm25_12m_mean <- mean(arf_exp$pm25_12m_mean, na.rm = TRUE)
+}
+grid_adj <- make_grid_for(arf_exp, fit_for_adj, xvar = no2_var, n = nrow(dec_tbl), other_fixed = other_fixed)
+grid_adj[[no2_var]] <- dec_tbl$no2_center
+
+pred_adj <- pred_ci_log(fit_for_adj, grid_adj) %>%
+  dplyr::transmute(
+    no2_center = .data[[no2_var]],
+    surv_pred  = 1 - pred,
+    surv_lo    = 1 - hi,
+    surv_hi    = 1 - lo
+  ) %>%
+  dplyr::bind_cols(dec_tbl %>% dplyr::select(no2_decile)) %>%
+  dplyr::arrange(no2_decile)
+
+# --- Plot: unadjusted points w/ error bars + adjusted line w/ ribbon ----------------------------
+x_lab <- if (no2_var == "no2_12m_mean") {
+  expression(NO[2]*" decile (12-mo exposure)")
+} else {
+  expression(NO[2]*" decile (cumulative 2018" * "\u2192" * "index)")
+}
+
+title_txt <- if (no2_var == "no2_12m_mean") {
+  "ICU survival vs NO\u2082 decile (12-mo exposure)"
+} else {
+  "ICU survival vs NO\u2082 decile (cumulative)"
+}
+
+p_dec <- ggplot(dec_tbl, aes(x = factor(no2_decile), y = surv_mean, group = 1)) +
+  # unadjusted
+  geom_point(size = 2.5, alpha = 0.9) +
+  geom_errorbar(aes(ymin = surv_lo, ymax = surv_hi), width = 0.15, alpha = 0.8) +
+  # adjusted overlay (line across deciles using decile centers)
+  geom_ribbon(
+    data = pred_adj,
+    aes(x = factor(no2_decile), ymin = surv_lo, ymax = surv_hi, y = NULL, group = 1),
+    inherit.aes = FALSE, alpha = 0.18
+  ) +
+  geom_line(
+    data = pred_adj,
+    aes(x = factor(no2_decile), y = surv_pred, group = 1),
+    linewidth = 1.1, alpha = 0.95
+  ) +
+  labs(
+    x = "NO\u2082 decile", y = "Survival probability (1 − in-hospital death)",
+    title = title_txt,
+    subtitle = "Points/whiskers: unadjusted by decile; Line/ribbon: adjusted predictions at decile centers"
+  ) +
+  theme_classic(base_size = 13)
+
+save_plot(p_dec, if (no2_var == "no2_12m_mean") "no2_deciles_vs_survival_12m" else "no2_deciles_vs_survival_cumulative",
+          w = 9, h = 6)
+
+
+# ---- helpers (only define if missing) -----------------------------------------------------------
+if (!exists("pred_ci_log", mode = "function")) {
+  pred_ci_log <- function(fit, newdata) {
+    pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+    dplyr::bind_cols(newdata,
+                     pred = plogis(pr$fit),
+                     lo   = plogis(pr$fit - 1.96 * pr$se.fit),
+                     hi   = plogis(pr$fit + 1.96 * pr$se.fit)
+    )
+  }
+}
+if (!exists("save_plot", mode = "function")) {
+  save_plot <- function(p, name, w = 9, h = 6, dpi = 300) {
+    out_dir <- get0("cfg", inherits = TRUE)$figures_path %||% "figures"
+    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+    ggplot2::ggsave(file.path(out_dir, paste0(name, ".png")), p, width = w, height = h, dpi = dpi)
+    ggplot2::ggsave(file.path(out_dir, paste0(name, ".pdf")), p, width = w, height = h)
+  }
+}
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
+# Safe grid builder that respects factor(index_year)
+if (!exists("make_grid_for", mode = "function")) {
+  make_grid_for <- function(df, fit, xvar, xlab = NULL, n = 10, other_fixed = list()) {
+    .top_level <- function(x) { if (is.factor(x)) x <- droplevels(x); tb <- sort(table(x), TRUE); if (length(tb)) names(tb)[1] else NA_character_ }
+    .safe_mean <- function(x) { m <- mean(x, na.rm = TRUE); if (is.nan(m)) NA_real_ else m }
+    rng <- df %>% dplyr::summarize(lo = quantile(.data[[xvar]], 0.01, na.rm = TRUE),
+                                   hi = quantile(.data[[xvar]], 0.99, na.rm = TRUE))
+    base <- tibble::tibble("{xvar}" := seq(rng$lo, rng$hi, length.out = n))
+    f_terms <- attr(terms(fit), "term.labels")
+    raw_vars <- ifelse(grepl("\\(", f_terms), sub(".*\\((.*)\\).*", "\\1", f_terms), f_terms)
+    if (any(grepl("^factor\\s*\\(\\s*index_year\\s*\\)$", f_terms))) raw_vars <- union(raw_vars, "index_year")
+    raw_vars <- unique(raw_vars)
+    
+    mode_year <- function() {
+      lev <- fit$xlevels[["factor(index_year)"]]
+      if (!is.null(lev)) { yr <- suppressWarnings(as.integer(lev[1])); if (!is.na(yr)) return(yr) }
+      yy <- as.integer(df$index_year); yy <- yy[is.finite(yy)]
+      if (!length(yy)) return(2020L)
+      as.integer(names(sort(table(yy), TRUE))[1])
+    }
+    
+    add_fixed <- function(var) {
+      if (var %in% names(base)) return()
+      if (var %in% names(other_fixed)) { base[[var]] <<- other_fixed[[var]]; return() }
+      if (identical(var, "index_year")) { base[[var]] <<- mode_year(); return() }
+      if (var %in% names(df)) {
+        if (is.numeric(df[[var]])) base[[var]] <<- .safe_mean(df[[var]])
+        else { base[[var]] <<- .top_level(df[[var]]); base[[var]] <<- factor(base[[var]], levels = levels(df[[var]])) }
+      }
+    }
+    for (v in raw_vars) add_fixed(v)
+    if (!is.null(fit$xlevels)) {
+      for (nm in names(fit$xlevels)) {
+        if (nm == "factor(index_year)") next
+        if (nm %in% names(base)) base[[nm]] <- factor(base[[nm]], levels = fit$xlevels[[nm]])
+      }
+    }
+    attr(base, "xlab") <- xlab %||% xvar; base
+  }
+}
+
+# Fit (or reuse) a single-pollutant adjusted logistic model
+ensure_logit <- function(xvar, suggested_fit = NULL) {
+  if (!is.null(suggested_fit) && exists(suggested_fit, inherits = TRUE)) return(get(suggested_fit))
+  fml <- as.formula(paste(
+    "in_hosp_death ~", xvar,
+    "+ age + sex_category + race_ethnicity_simple",
+    "+ svi_overall + acs_median_income + acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured",
+    "+ factor(index_year)"
+  ))
+  glm(fml, data = arf_exp, family = binomial())
+}
+
+# -------- REPLACE the helper with this string-based version --------
+plot_survival_by_decile <- function(
+    xvar,
+    x_label,                         # plain string, no arrows
+    title_label = NULL,              # plain string; if NULL uses "ICU survival vs <x_label>"
+    fit_name = NULL,
+    filename_stub,
+    filter_complete_flag = NULL,
+    y_zoom = NULL
+) {
+  stopifnot(xvar %in% names(arf_exp))
+  
+  # keep earlier helpers
+  if (!exists("pred_ci_log", mode = "function")) {
+    pred_ci_log <- function(fit, newdata) {
+      pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+      dplyr::bind_cols(newdata,
+                       pred = plogis(pr$fit),
+                       lo   = plogis(pr$fit - 1.96*pr$se.fit),
+                       hi   = plogis(pr$fit + 1.96*pr$se.fit)
+      )
+    }
+  }
+  if (!exists("make_grid_for", mode = "function")) stop("make_grid_for() must be defined (use the safe version from earlier).")
+  if (!exists("save_plot", mode = "function")) stop("save_plot() must be defined.")
+  
+  dat <- arf_exp
+  if (!is.null(filter_complete_flag) && filter_complete_flag %in% names(dat)) {
+    dat <- dat %>% dplyr::filter(.data[[filter_complete_flag]] == TRUE)
+  }
+  dat <- dat %>% dplyr::filter(!is.na(.data[[xvar]]), !is.na(in_hosp_death)) %>%
+    dplyr::mutate(survival = 1 - in_hosp_death)
+  
+  # unadjusted deciles
+  dec_tbl <- dat %>%
+    dplyr::mutate(dec = dplyr::ntile(.data[[xvar]], 10L)) %>%
+    dplyr::group_by(dec) %>%
+    dplyr::summarise(
+      n          = dplyr::n(),
+      surv_mean  = mean(survival),
+      se         = sqrt(pmax(1e-12, surv_mean*(1 - surv_mean) / n)),
+      surv_lo    = pmax(0, surv_mean - 1.96*se),
+      surv_hi    = pmin(1, surv_mean + 1.96*se),
+      x_center   = mean(.data[[xvar]], na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # model (reuse if provided)
+  ensure_logit <- function(xvar, suggested_fit = NULL) {
+    if (!is.null(suggested_fit) && exists(suggested_fit, inherits = TRUE)) return(get(suggested_fit))
+    fml <- as.formula(paste(
+      "in_hosp_death ~", xvar,
+      "+ age + sex_category + race_ethnicity_simple",
+      "+ svi_overall + acs_median_income + acs_pct_lt_hs + acs_unemp_rate_pct + acs_pct_insured",
+      "+ factor(index_year)"
+    ))
+    glm(fml, data = arf_exp, family = binomial())
+  }
+  fit <- ensure_logit(xvar, fit_name)
+  
+  grid_adj <- make_grid_for(arf_exp, fit, xvar = xvar, n = nrow(dec_tbl))
+  grid_adj[[xvar]] <- dec_tbl$x_center
+  
+  pred <- pred_ci_log(fit, grid_adj) %>%
+    dplyr::transmute(dec = dec_tbl$dec,
+                     surv_pred = 1 - pred,
+                     lo = 1 - hi,
+                     hi = 1 - lo)
+  
+  p <- ggplot2::ggplot(dec_tbl, aes(x = factor(dec), y = surv_mean, group = 1)) +
+    ggplot2::geom_point(size = 2.5, alpha = 0.9) +
+    ggplot2::geom_errorbar(aes(ymin = surv_lo, ymax = surv_hi), width = 0.15, alpha = 0.85) +
+    ggplot2::geom_ribbon(data = pred, aes(x = factor(dec), ymin = lo, ymax = hi, y = NULL),
+                         inherit.aes = FALSE, alpha = 0.18) +
+    ggplot2::geom_line(data = pred, aes(x = factor(dec), y = surv_pred, group = 1),
+                       linewidth = 1.1, alpha = 0.95) +
+    ggplot2::labs(
+      x = x_label,
+      y = "Survival probability (1 − in-hospital death)",
+      title = title_label %||% paste0("ICU survival vs ", x_label)
+    ) +
+    ggplot2::theme_classic(base_size = 13)
+  
+  # optional zoom
+  if (is.null(y_zoom)) {
+    y_min <- min(c(dec_tbl$surv_lo, pred$lo), na.rm = TRUE)
+    y_max <- max(c(dec_tbl$surv_hi, pred$hi), na.rm = TRUE)
+    pad   <- 0.01
+    p <- p + ggplot2::coord_cartesian(ylim = c(max(0, y_min - pad), min(1, y_max + pad)))
+  } else {
+    p <- p + ggplot2::coord_cartesian(ylim = y_zoom)
+  }
+  
+  save_plot(p, filename_stub, w = 9, h = 6)
+  p
+}
+
+
+# ================== Run the three/four plots you asked for ==================
+plots_made <- list()
+common_ylims <- c(0.80, 0.99)  # tweak if you want a different window
+
+# NO2 cumulative
+if ("no2_mean_cummean_2018toYr" %in% names(arf_exp)) {
+  plot_survival_by_decile(
+    xvar = "no2_mean_cummean_2018toYr",
+    x_label = "NO\u2082 decile (cumulative 2018 to index)",
+    title_label = "ICU survival vs NO\u2082 decile (cumulative 2018 to index)",
+    fit_name = if (exists("fit_inhosp_cum_no2")) "fit_inhosp_cum_no2" else NULL,
+    filename_stub = "no2_deciles_vs_survival_cumulative",
+    y_zoom = common_ylims
+  )
+}
+
+# NO2 12-month
+if ("no2_12m_mean" %in% names(arf_exp)) {
+  plot_survival_by_decile(
+    xvar = "no2_12m_mean",
+    x_label = "NO\u2082 decile (12-month exposure)",
+    title_label = "ICU survival vs NO\u2082 decile (12-month exposure)",
+    fit_name = if (exists("fit_inhosp_short")) "fit_inhosp_short" else NULL,
+    filename_stub = "no2_deciles_vs_survival_12m",
+    filter_complete_flag = if ("no2_12m_complete" %in% names(arf_exp)) "no2_12m_complete" else NULL,
+    y_zoom = common_ylims
+  )
+}
+
+# PM2.5 cumulative
+if ("pm25_mean_cummean_2018toYr" %in% names(arf_exp)) {
+  plot_survival_by_decile(
+    xvar = "pm25_mean_cummean_2018toYr",
+    x_label = "PM\u2082\u00B7\u2085 decile (cumulative 2018 to index)",
+    title_label = "ICU survival vs PM\u2082\u00B7\u2085 decile (cumulative 2018 to index)",
+    fit_name = if (exists("fit_inhosp_cum_pm25")) "fit_inhosp_cum_pm25" else NULL,
+    filename_stub = "pm25_deciles_vs_survival_cumulative",
+    y_zoom = common_ylims
+  )
+}
+
+# PM2.5 12-month
+if ("pm25_12m_mean" %in% names(arf_exp)) {
+  plot_survival_by_decile(
+    xvar = "pm25_12m_mean",
+    x_label = "PM\u2082\u00B7\u2085 decile (12-month exposure)",
+    title_label = "ICU survival vs PM\u2082\u00B7\u2085 decile (12-month exposure)",
+    fit_name = if (exists("fit_inhosp_short_pm25")) "fit_inhosp_short_pm25" else NULL,
+    filename_stub = "pm25_deciles_vs_survival_12m",
+    filter_complete_flag = if ("pm25_12m_complete" %in% names(arf_exp)) "pm25_12m_complete" else NULL,
+    y_zoom = common_ylims
+  )
+}
+
+
+
 
 
 

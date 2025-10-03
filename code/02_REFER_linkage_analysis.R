@@ -213,13 +213,13 @@ adt_tmp <- icu_stay |>
 
 icu_segs <- adt_tmp |>
   mutate(
-    in_raw  = pick_col(adt_tmp,  c("in_dttm","adt_in_dttm","icu_in","arrival_dttm","in_time")),
-    out_raw = pick_col(adt_tmp,  c("out_dttm","adt_out_dttm","icu_out","departure_dttm","out_time")),
+    in_raw  = in_dttm,
+    out_raw = out_dttm,
     in_ts   = safe_ts(in_raw),
     out_ts  = safe_ts(out_raw),
-    loccat  = tolower(pick_col(adt_tmp, c("location_category","loc_category","unit_category")))
+    loccat  = tolower(location_category)
   ) |>
-  filter(str_detect(loccat, "\\bicu\\b|\\bccu\\b|\\bmicu\\b|\\bsicu\\b|\\bcicu\\b|\\bnicu\\b|\\bpicu\\b")) |>
+  filter(loccat == "icu") |>
   filter(!is.na(patient_id), !is.na(in_ts), !is.na(out_ts), out_ts > in_ts)
 
 # Prior ICU stays

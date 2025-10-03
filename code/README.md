@@ -6,7 +6,7 @@ This directory contains scripts for the project workflow. The general workflow c
 
 0. First, initialize your R environment using `00_renv_restore`.
 
-1. Run the `01_REFER_cohort_identification.R` script. **Before running this script, be sure to edit line 51 with your working directory path that is the repo root directory**.
+1. Run the `01_REFER_cohort_identification.R` script. 
    This script should:
    - Apply inclusion and exclusion criteria
    - Select required fields from each table

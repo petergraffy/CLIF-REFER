@@ -6,7 +6,7 @@ This directory contains scripts for the project workflow. The general workflow c
 
 0. First, initialize your R environment using `00_renv_restore`.
 
-1. Run the `01_REFER_cohort_identification.R` script. **Before running this script, be sure to edit line 51 with your working directory path that is the repo root directory**.
+1. Run the `01_REFER_cohort_identification.R` script. 
    This script should:
    - Apply inclusion and exclusion criteria
    - Select required fields from each table
@@ -20,8 +20,6 @@ Then, **without making any changes to your R environment**, you can run the next
    - Perform project-specific quality control checks on the filtered cohort data.
    - Perform geospatial linkage to exposome features in the accompanied csv files.
    - Perform modeling and return outputs and figures.
-   
-**NOTE**: you might need to update the dev_low object to be device_category and str_detect() "IMV". 
 
 If you accidentally cleared your environment between steps, you can run step 1 again to get the objects back in your environment, or you can re-read the saved csv output from file one in the output folder.
 

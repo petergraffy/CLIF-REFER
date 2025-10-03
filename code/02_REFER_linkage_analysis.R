@@ -50,13 +50,15 @@ source(rpath("utils", "config.R"))
 `%||%` <- function(x, y) if (!is.null(x)) x else y  # null-coalesce helper
 
 # print a few key fields the user asked for
-site_name   <- config$site_name   %||% "unknown_site"
-tables_path <- config$tables_path %||% "data/"
-file_type   <- config$file_type   %||% "parquet"
+site_name   <- config$site_name   
+tables_path <- config$tables_path
+file_type   <- config$file_type   
+time_zone   <- config$time_zone
 
 print(paste("Site Name:", site_name))
 print(paste("Tables Path:", tables_path))
 print(paste("File Type:", file_type))
+print(paste("Local time_zone:", time_zone))
 
 # build runtime cfg from config + defaults
 cfg <- list(
@@ -148,7 +150,7 @@ coalesce_any <- function(data, candidates) {
   dplyr::coalesce(!!!cols)
 }
 
-safe_ts <- function(x, tz = "America/Chicago") {
+safe_ts <- function(x, tz = time_zone) {
   if (inherits(x, "POSIXt")) return(x)
   if (is.numeric(x)) {
     x2 <- ifelse(x > 1e12, x/1000, x)
@@ -172,12 +174,10 @@ add_index_fields <- function(df) {
         by = c("patient_id","hospitalization_id")
       )
   }
-  admit_raw_vec <- coalesce_any(df, c("admission_dttm","admit_dttm","admit_time","admission_time"))
-  disch_raw_vec <- coalesce_any(df, c("discharge_dttm","discharge_time","dc_dttm","disposition_time"))
   df |>
     dplyr::mutate(
-      index_admit     = safe_ts(admit_raw_vec),
-      index_discharge = safe_ts(disch_raw_vec),
+      index_admit     = safe_ts(admission_dttm),
+      index_discharge = safe_ts(discharge_dttm),
       index_year      = lubridate::year(index_admit),
       index_date      = as.Date(index_admit)
     )
@@ -213,13 +213,13 @@ adt_tmp <- icu_stay |>
 
 icu_segs <- adt_tmp |>
   mutate(
-    in_raw  = pick_col(adt_tmp,  c("in_dttm","adt_in_dttm","icu_in","arrival_dttm","in_time")),
-    out_raw = pick_col(adt_tmp,  c("out_dttm","adt_out_dttm","icu_out","departure_dttm","out_time")),
+    in_raw  = in_dttm,
+    out_raw = out_dttm,
     in_ts   = safe_ts(in_raw),
     out_ts  = safe_ts(out_raw),
-    loccat  = tolower(pick_col(adt_tmp, c("location_category","loc_category","unit_category")))
+    loccat  = tolower(location_category)
   ) |>
-  filter(str_detect(loccat, "\\bicu\\b|\\bccu\\b|\\bmicu\\b|\\bsicu\\b|\\bcicu\\b|\\bnicu\\b|\\bpicu\\b")) |>
+  filter(loccat == "icu") |>
   filter(!is.na(patient_id), !is.na(in_ts), !is.na(out_ts), out_ts > in_ts)
 
 # Prior ICU stays
@@ -237,36 +237,6 @@ med_tmp <- med_admin |>
     by = "hospitalization_id"
   )
 
-baseline_meds <- med_tmp |>
-  mutate(
-    admin_ts = safe_ts(pick_col(med_tmp, c("admin_dttm","start_dttm","start_time","start_ts"), TRUE)),
-    med_low  = tolower(pick_col(med_tmp, c("medication_name","medication","drug_name","med_name"), TRUE))
-  ) |>
-  inner_join(cohort_lb, by = "patient_id", relationship = "many-to-many") |>
-  filter(!is.na(admin_ts), admin_ts >= lb_start, admin_ts < index_admit) |>
-  mutate(
-    is_acei_arb = str_detect(med_low, "lisinopril|losartan|valsartan|enalapril|olmesartan|candesartan"),
-    is_diuretic = str_detect(med_low, "furosemide|bumetanide|torsemide|hydrochlorothiazide"),
-    is_bb       = str_detect(med_low, "metoprolol|carvedilol|atenolol|propranolol")
-  ) |>
-  group_by(patient_id, hospitalization_id.y) |>
-  summarise(
-    any_acei_arb = as.integer(any(is_acei_arb, na.rm = TRUE)),
-    any_diuretic = as.integer(any(is_diuretic, na.rm = TRUE)),
-    any_bb       = as.integer(any(is_bb, na.rm = TRUE)),
-    .groups = "drop"
-  ) |>
-  rename(hospitalization_id = hospitalization_id.y)
-
-history_features <- cohort_all |>
-  dplyr::select(patient_id, hospitalization_id) |>
-  dplyr::distinct() |>
-  dplyr::left_join(icu_hist,      by = c("patient_id","hospitalization_id")) |>
-  dplyr::left_join(baseline_meds, by = c("patient_id","hospitalization_id")) |>
-  dplyr::mutate(dplyr::across(c(prior_icu_stays, any_acei_arb, any_diuretic, any_bb), ~tidyr::replace_na(., 0)))
-
-#save_tbl(history_features, "history_features")
-
 # ------------------------------------ 4) Outcomes ------------------------------------------------
 # ICU LOS
 icu_los <- icu_segs |>
@@ -282,11 +252,35 @@ hosp_los <- cohort_all |>
   left_join(hospitalization |> dplyr::select(hospitalization_id, discharge_category, county_code),
             by = "hospitalization_id")
 
+vitals_dttm <- vitals |>
+  filter(hospitalization_id %in% cohort_all$hospitalization_id) |>
+  group_by(hospitalization_id) |>
+  mutate(vital_recorded_ts= safe_ts(recorded_dttm)) |> 
+  summarise(
+    first_vital_dttm = min(vital_recorded_ts, na.rm = TRUE),
+    last_vital_dttm = max(vital_recorded_ts, na.rm = TRUE))
+
+final_outcome_times <- hospitalization |> 
+  dplyr::select(patient_id, hospitalization_id, discharge_category, discharge_dttm) |> 
+  filter(hospitalization_id %in% cohort_all$hospitalization_id) |> 
+  mutate(discharge_cat_low = tolower(discharge_category),
+         discharge_time = safe_ts(discharge_dttm)) |> 
+  # filter(discharge_category %in% c("expired", "hospice")) |> 
+  left_join(patient |> dplyr::select(patient_id, death_dttm), by = "patient_id") |>  
+  left_join(vitals_dttm, by = "hospitalization_id") |>
+  mutate(
+    death_dttm_final = case_when(
+      discharge_cat_low %in% c("expired", "hospice") & is.na(death_dttm) ~ last_vital_dttm,
+      TRUE ~ death_dttm
+    )
+  )
+
 # Mortality
 mortality_instay <- cohort_all |>
-  left_join(patient |> dplyr::select(patient_id, death_dttm), by = "patient_id") |>
+  left_join(final_outcome_times |> dplyr::select(hospitalization_id, death_dttm_final), 
+            by = "hospitalization_id") |>
   mutate(
-    death_ts      = safe_ts(death_dttm),
+    death_ts      = safe_ts(death_dttm_final),
     in_hosp_death = as.integer(!is.na(death_ts) & death_ts >= index_admit & death_ts <= index_discharge),
     death_30d     = as.integer(!is.na(death_ts) & death_ts <= (index_admit + days(30)))
   ) |>
@@ -294,10 +288,8 @@ mortality_instay <- cohort_all |>
 
 # Vent flag + durations
 vent_flag <- support |>
-  mutate(dev_low = tolower(coalesce(device_name, ""))) |>
-  mutate(dev_low_cat = tolower(coalesce(device_category, ""))) |>                                       ############NEW
-  filter(str_detect(dev_low, "\\bvent\\b|vent;|vent ") | str_detect(dev_low_cat, "imv")) |>             ###############CHANGE
-  filter(!str_detect(dev_low, "bipap|cpap|high flow|nasal cannula|\\bnc\\b|trach collar|oxytrach|room air")) |>
+  mutate(dev_low = tolower(device_category)) |>
+  filter(str_detect(dev_low, "imv")) |>           
   semi_join(cohort_all, by = "hospitalization_id") |>
   distinct(hospitalization_id) |>
   mutate(vent_proc_flag = 1L)
@@ -306,16 +298,15 @@ support_tmp <- support |>
   left_join(hospitalization |> dplyr::select(hospitalization_id, patient_id), by = "hospitalization_id") |>
   mutate(
     rec_time = safe_ts(recorded_dttm),
-    dev_low  = tolower(coalesce(.data$device_name, "")),
-    dev_low_cat  = tolower(coalesce(.data$device_category, ""))                                         ###############NEW
+    dev_low  = tolower(device_category)
   ) |>
   filter(!is.na(rec_time)) |>
   semi_join(cohort_all, by = "hospitalization_id")
 
 support_class <- support_tmp |>
   mutate(
-    is_niv = str_detect(dev_low, "bipap|cpap|high flow|hf vent|nasal cannula|\\bnc\\b|venturi|face mask|face tent|trach collar|oxytrach|room air|t-piece|ram cannula|aerosol mask|o2 hood"),
-    has_vent_token = (str_detect(dev_low, "(^|[ ;])vent([ ;]|$)") | str_detect(dev_low_cat, "imv")),    ###############CHANGE
+    is_niv = str_detect(dev_low, "nippv|cpap|high flow nc"),
+    has_vent_token = (str_detect(dev_low, "imv")),  
     is_invasive_vent = has_vent_token & !is_niv
   )
 
@@ -337,7 +328,7 @@ vent_durations <- support_class |>
 
 # AKI (creatinine swing)
 aki_flag <- labs_df |>
-  mutate(name_low = tolower(pick_col(labs_df, c("lab_name","test_name","component","loinc_name")))) |>
+  mutate(name_low = tolower(lab_category)) |>
   filter(str_detect(name_low, "creatinine")) |>
   semi_join(cohort_all, by = "hospitalization_id") |>
   group_by(hospitalization_id) |>
@@ -345,7 +336,7 @@ aki_flag <- labs_df |>
             .groups = "drop")
 
 vaso_flag <- med_admin |>
-  dplyr::mutate(med_low = tolower(pick_col(med_admin, c("medication_name","medication","drug_name","med_name")))) |>
+  dplyr::mutate(med_low = tolower(med_category)) |>
   dplyr::filter(stringr::str_detect(med_low, "norepinephrine|epinephrine|phenylephrine|vasopressin|dopamine")) |>
   dplyr::semi_join(cohort_all, by="hospitalization_id") |>
   dplyr::distinct(hospitalization_id) |>
@@ -427,33 +418,23 @@ outcomes_exp <- outcomes_exp |>
 #save_tbl(outcomes_exp, "outcomes_exposome")
 
 # ------------------------------------ 6) ARF Analytic Frame + Demographics ----------------------
+
 arf_exp <- outcomes_exp |> filter(cohort == "ARF") |>
-  left_join(patient |> dplyr::select(patient_id, race_name, ethnicity_category, sex_category, birth_date),
+  left_join(patient |> dplyr::select(patient_id, race_category, ethnicity_category, sex_category, birth_date),
             by = "patient_id") |>
+  dplyr::mutate(race_category = tolower(race_category),
+                ethnicity_category = tolower(ethnicity_category)) |> 
   mutate(
-    race_ethnicity = case_when(
-      str_to_lower(ethnicity_category) %in% c("hispanic", "latino", "latinx") ~ paste0("Hispanic ", race_name),
-      TRUE ~ paste0("Non-Hispanic ", race_name)
-    ),
-    age = as.numeric(difftime(index_admit, birth_date, units = "days")) / 365.25
-  ) |>
-  mutate(
-    re_low = str_to_lower(race_ethnicity),
-    is_nonhisp = str_detect(re_low, "\\bnon[- ]?hispanic\\b"),
-    is_hisp    = str_detect(re_low, "\\bhispanic\\b") & !is_nonhisp,
-    is_white   = str_detect(re_low, "\\bwhite\\b"),
-    is_black   = str_detect(re_low, "black"),
-    is_asian_any = str_detect(re_low, "asian|mideast|filipino|chinese|korean|vietnamese|pacific islander|samoan"),
+    age = as.numeric(difftime(index_admit, birth_date, units = "days")) / 365.25,
     race_ethnicity_simple = case_when(
-      is_white & is_hisp    ~ "Hispanic White",
-      is_white & is_nonhisp ~ "Non-Hispanic White",
-      is_black & is_hisp    ~ "Hispanic Black",
-      is_black & is_nonhisp ~ "Non-Hispanic Black",
-      is_asian_any          ~ "Asian",
-      TRUE                  ~ "Other"
+      ethnicity_category == "hispanic" & race_category == "white" ~ "Hispanic White",
+      ethnicity_category == "non-hispanic" & race_category == "white" ~ "Non-Hispanic White",
+      ethnicity_category == "hispanic" & race_category %in% c("black or african american", "black", "african american", "african-american") ~ "Hispanic Black",
+      ethnicity_category == "non-hispanic" & race_category %in% c("black or african american", "black", "african american", "african-american") ~ "Non-Hispanic Black",
+      race_category == "asian" ~ "Asian",
+      TRUE ~ "Other"
     )
   ) |>
-  dplyr::select(-re_low, -is_nonhisp, -is_hisp, -is_white, -is_black, -is_asian_any) |>
   mutate(
     sex_category = factor(sex_category),
     race_ethnicity_simple = factor(race_ethnicity_simple,
@@ -461,6 +442,7 @@ arf_exp <- outcomes_exp |> filter(cohort == "ARF") |>
   )
 
 #save_tbl(arf_exp, "arf_exp")
+
 
 # ------------------------------------ 7) Models (Adjusted) --------------------------------------
 # Helper to tidy-save any model
@@ -4588,12 +4570,25 @@ export_site_cif_plotdfs <- function(tte,
   }
 }
 
+
+## missing % in final df 
+missingness_df <- arf_exp |>
+  summarise(across(everything(), 
+                   ~sum(is.na(.)), 
+                   .names = "{.col}_missing")) |>
+  pivot_longer(everything(), 
+               names_to = "column", 
+               values_to = "n_missing") |>
+  mutate(
+    column = str_remove(column, "_missing"),
+    total_rows = nrow(arf_exp),
+    pct_missing = round(100 * n_missing / total_rows, 2)
+  ) 
+
+save_tbl(missingness_df, "missing_pct")
+
 # ---- Run it (after tte is built) ----
 export_site_cif_plotdfs(tte)
-
-
-
-
 
 
 # =========================

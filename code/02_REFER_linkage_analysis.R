@@ -304,7 +304,7 @@ vent_durations <- support_class |>
 
 # AKI (creatinine swing)
 aki_flag <- labs_df |>
-  mutate(name_low = tolower(pick_col(labs_df, c("lab_name","test_name","component","loinc_name")))) |>
+  mutate(name_low = tolower(lab_category)) |>
   filter(str_detect(name_low, "creatinine")) |>
   semi_join(cohort_all, by = "hospitalization_id") |>
   group_by(hospitalization_id) |>
@@ -312,7 +312,7 @@ aki_flag <- labs_df |>
             .groups = "drop")
 
 vaso_flag <- med_admin |>
-  dplyr::mutate(med_low = tolower(pick_col(med_admin, c("medication_name","medication","drug_name","med_name")))) |>
+  dplyr::mutate(med_low = tolower(med_category)) |>
   dplyr::filter(stringr::str_detect(med_low, "norepinephrine|epinephrine|phenylephrine|vasopressin|dopamine")) |>
   dplyr::semi_join(cohort_all, by="hospitalization_id") |>
   dplyr::distinct(hospitalization_id) |>

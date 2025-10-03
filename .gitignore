@@ -30,3 +30,7 @@ initialize_renv.R
 # ignore pdf reports and rendered html
 *.pdf
 *.html
+
+#output files 
+/output
+acs_estimates.csv

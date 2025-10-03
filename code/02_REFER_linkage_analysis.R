@@ -50,13 +50,15 @@ source(rpath("utils", "config.R"))
 `%||%` <- function(x, y) if (!is.null(x)) x else y  # null-coalesce helper
 
 # print a few key fields the user asked for
-site_name   <- config$site_name   %||% "unknown_site"
-tables_path <- config$tables_path %||% "data/"
-file_type   <- config$file_type   %||% "parquet"
+site_name   <- config$site_name   
+tables_path <- config$tables_path
+file_type   <- config$file_type   
+time_zone   <- config$time_zone
 
 print(paste("Site Name:", site_name))
 print(paste("Tables Path:", tables_path))
 print(paste("File Type:", file_type))
+print(paste("Local time_zone:", time_zone))
 
 # build runtime cfg from config + defaults
 cfg <- list(
@@ -148,7 +150,7 @@ coalesce_any <- function(data, candidates) {
   dplyr::coalesce(!!!cols)
 }
 
-safe_ts <- function(x, tz = "America/Chicago") {
+safe_ts <- function(x, tz = time_zone) {
   if (inherits(x, "POSIXt")) return(x)
   if (is.numeric(x)) {
     x2 <- ifelse(x > 1e12, x/1000, x)

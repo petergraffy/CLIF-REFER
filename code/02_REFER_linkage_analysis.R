@@ -174,12 +174,10 @@ add_index_fields <- function(df) {
         by = c("patient_id","hospitalization_id")
       )
   }
-  admit_raw_vec <- coalesce_any(df, c("admission_dttm","admit_dttm","admit_time","admission_time"))
-  disch_raw_vec <- coalesce_any(df, c("discharge_dttm","discharge_time","dc_dttm","disposition_time"))
   df |>
     dplyr::mutate(
-      index_admit     = safe_ts(admit_raw_vec),
-      index_discharge = safe_ts(disch_raw_vec),
+      index_admit     = safe_ts(admission_dttm),
+      index_discharge = safe_ts(discharge_dttm),
       index_year      = lubridate::year(index_admit),
       index_date      = as.Date(index_admit)
     )

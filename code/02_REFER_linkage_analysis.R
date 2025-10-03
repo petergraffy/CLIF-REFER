@@ -252,11 +252,35 @@ hosp_los <- cohort_all |>
   left_join(hospitalization |> dplyr::select(hospitalization_id, discharge_category, county_code),
             by = "hospitalization_id")
 
+vitals_dttm <- vitals |>
+  filter(hospitalization_id %in% cohort_all$hospitalization_id) |>
+  group_by(hospitalization_id) |>
+  mutate(vital_recorded_ts= safe_ts(recorded_dttm)) |> 
+  summarise(
+    first_vital_dttm = min(vital_recorded_ts, na.rm = TRUE),
+    last_vital_dttm = max(vital_recorded_ts, na.rm = TRUE))
+
+final_outcome_times <- hospitalization |> 
+  dplyr::select(patient_id, hospitalization_id, discharge_category, discharge_dttm) |> 
+  filter(hospitalization_id %in% cohort_all$hospitalization_id) |> 
+  mutate(discharge_cat_low = tolower(discharge_category),
+         discharge_time = safe_ts(discharge_dttm)) |> 
+  # filter(discharge_category %in% c("expired", "hospice")) |> 
+  left_join(patient |> dplyr::select(patient_id, death_dttm), by = "patient_id") |>  
+  left_join(vitals_dttm, by = "hospitalization_id") |>
+  mutate(
+    death_dttm_final = case_when(
+      discharge_cat_low %in% c("expired", "hospice") & is.na(death_dttm) ~ last_vital_dttm,
+      TRUE ~ death_dttm
+    )
+  )
+
 # Mortality
 mortality_instay <- cohort_all |>
-  left_join(patient |> dplyr::select(patient_id, death_dttm), by = "patient_id") |>
+  left_join(final_outcome_times |> dplyr::select(hospitalization_id, death_dttm_final), 
+            by = "hospitalization_id") |>
   mutate(
-    death_ts      = safe_ts(death_dttm),
+    death_ts      = safe_ts(death_dttm_final),
     in_hosp_death = as.integer(!is.na(death_ts) & death_ts >= index_admit & death_ts <= index_discharge),
     death_30d     = as.integer(!is.na(death_ts) & death_ts <= (index_admit + days(30)))
   ) |>
@@ -265,7 +289,7 @@ mortality_instay <- cohort_all |>
 # Vent flag + durations
 vent_flag <- support |>
   mutate(dev_low = tolower(device_category)) |>
-  filter(str_detect(dev_low_cat, "imv")) |>           
+  filter(str_detect(dev_low, "imv")) |>           
   semi_join(cohort_all, by = "hospitalization_id") |>
   distinct(hospitalization_id) |>
   mutate(vent_proc_flag = 1L)
@@ -282,7 +306,7 @@ support_tmp <- support |>
 support_class <- support_tmp |>
   mutate(
     is_niv = str_detect(dev_low, "nippv|cpap|high flow nc"),
-    has_vent_token = (str_detect(dev_low_cat, "imv")),  
+    has_vent_token = (str_detect(dev_low, "imv")),  
     is_invasive_vent = has_vent_token & !is_niv
   )
 

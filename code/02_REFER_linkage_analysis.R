@@ -237,35 +237,6 @@ med_tmp <- med_admin |>
     by = "hospitalization_id"
   )
 
-baseline_meds <- med_tmp |>
-  mutate(
-    admin_ts = safe_ts(pick_col(med_tmp, c("admin_dttm","start_dttm","start_time","start_ts"), TRUE)),
-    med_low  = tolower(pick_col(med_tmp, c("medication_name","medication","drug_name","med_name"), TRUE))
-  ) |>
-  inner_join(cohort_lb, by = "patient_id", relationship = "many-to-many") |>
-  filter(!is.na(admin_ts), admin_ts >= lb_start, admin_ts < index_admit) |>
-  mutate(
-    is_acei_arb = str_detect(med_low, "lisinopril|losartan|valsartan|enalapril|olmesartan|candesartan"),
-    is_diuretic = str_detect(med_low, "furosemide|bumetanide|torsemide|hydrochlorothiazide"),
-    is_bb       = str_detect(med_low, "metoprolol|carvedilol|atenolol|propranolol")
-  ) |>
-  group_by(patient_id, hospitalization_id.y) |>
-  summarise(
-    any_acei_arb = as.integer(any(is_acei_arb, na.rm = TRUE)),
-    any_diuretic = as.integer(any(is_diuretic, na.rm = TRUE)),
-    any_bb       = as.integer(any(is_bb, na.rm = TRUE)),
-    .groups = "drop"
-  ) |>
-  rename(hospitalization_id = hospitalization_id.y)
-
-history_features <- cohort_all |>
-  dplyr::select(patient_id, hospitalization_id) |>
-  dplyr::distinct() |>
-  dplyr::left_join(icu_hist,      by = c("patient_id","hospitalization_id")) |>
-  dplyr::left_join(baseline_meds, by = c("patient_id","hospitalization_id")) |>
-  dplyr::mutate(dplyr::across(c(prior_icu_stays, any_acei_arb, any_diuretic, any_bb), ~tidyr::replace_na(., 0)))
-
-#save_tbl(history_features, "history_features")
 
 # ------------------------------------ 4) Outcomes ------------------------------------------------
 # ICU LOS

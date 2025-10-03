@@ -31,6 +31,7 @@ suppressPackageStartupMessages({
   library(forcats)
   library(grid)
   library(jsonlite)
+  library(cmprsk)
 })
 
 # ---- 0.1 Load config (YAML or fallback defaults) ----------------------------------------------
@@ -103,8 +104,8 @@ dir.create(cfg$figures_path, recursive = TRUE, showWarnings = FALSE)
 
 save_tbl <- function(x, name) {
   .ensure_subdir(name, cfg$output_dir)
-  readr::write_csv(x, file.path(cfg$output_dir, dirname(name),
-                                paste0(cfg$prefix, "_", basename(name), "_", cfg$run_id, ".csv")))
+  readr::write_excel_csv(x, file.path(cfg$output_dir, dirname(name),
+                                      paste0(cfg$prefix, "_", basename(name), "_", cfg$run_id, ".csv")))
 }
 
 save_model <- function(fit, name) {
@@ -207,7 +208,7 @@ cohort_lb <- cohort_all |>
 adt_tmp <- icu_stay |>
   dplyr::left_join(
     hospitalization |> dplyr::select(hospitalization_id, patient_id),
-    by = "hospitalization_id"
+    by = join_by(hospitalization_id)
   )
 
 icu_segs <- adt_tmp |>
@@ -294,7 +295,8 @@ mortality_instay <- cohort_all |>
 # Vent flag + durations
 vent_flag <- support |>
   mutate(dev_low = tolower(coalesce(device_name, ""))) |>
-  filter(str_detect(dev_low, "\\bvent\\b|vent;|vent ")) |>
+  mutate(dev_low_cat = tolower(coalesce(device_category, ""))) |>                                       ############NEW
+  filter(str_detect(dev_low, "\\bvent\\b|vent;|vent ") | str_detect(dev_low_cat, "imv")) |>             ###############CHANGE
   filter(!str_detect(dev_low, "bipap|cpap|high flow|nasal cannula|\\bnc\\b|trach collar|oxytrach|room air")) |>
   semi_join(cohort_all, by = "hospitalization_id") |>
   distinct(hospitalization_id) |>
@@ -303,8 +305,9 @@ vent_flag <- support |>
 support_tmp <- support |>
   left_join(hospitalization |> dplyr::select(hospitalization_id, patient_id), by = "hospitalization_id") |>
   mutate(
-    rec_time = safe_ts(coalesce(.data$recorded_time, .data$recorded_dttm)),
-    dev_low  = tolower(coalesce(.data$device_name, ""))
+    rec_time = safe_ts(recorded_dttm),
+    dev_low  = tolower(coalesce(.data$device_name, "")),
+    dev_low_cat  = tolower(coalesce(.data$device_category, ""))                                         ###############NEW
   ) |>
   filter(!is.na(rec_time)) |>
   semi_join(cohort_all, by = "hospitalization_id")
@@ -312,7 +315,7 @@ support_tmp <- support |>
 support_class <- support_tmp |>
   mutate(
     is_niv = str_detect(dev_low, "bipap|cpap|high flow|hf vent|nasal cannula|\\bnc\\b|venturi|face mask|face tent|trach collar|oxytrach|room air|t-piece|ram cannula|aerosol mask|o2 hood"),
-    has_vent_token = str_detect(dev_low, "(^|[ ;])vent([ ;]|$)"),
+    has_vent_token = (str_detect(dev_low, "(^|[ ;])vent([ ;]|$)") | str_detect(dev_low_cat, "imv")),    ###############CHANGE
     is_invasive_vent = has_vent_token & !is_niv
   )
 
@@ -477,7 +480,7 @@ tidy_and_save <- function(fit, name, exponentiate = FALSE, folder = "models") {
   clean_name <- sanitize_filename(name)
   
   out_file <- file.path(out_dir, paste0(cfg$prefix, "_model_tidy_", clean_name, "_", cfg$run_id, ".csv"))
-  readr::write_csv(tt, out_file)
+  readr::write_excel_csv(tt, out_file)
   tt
 }
 
@@ -715,13 +718,13 @@ make_grid_sub_safe <- function(df, arf_lvls, n = 150) {
     tab <- sort(table(x), decreasing = TRUE)
     if (length(tab) == 0) NA_character_ else names(tab)[1]
   }
-
+  
   rng <- df %>%
     dplyr::summarize(
       lo = stats::quantile(no2_10, 0.01, na.rm = TRUE),
       hi = stats::quantile(no2_10, 0.99, na.rm = TRUE)
     )
-
+  
   expand.grid(
     no2_10 = seq(rng$lo, rng$hi, length.out = n),
     arf_subtype = arf_lvls,
@@ -734,13 +737,13 @@ make_grid_sub_safe <- function(df, arf_lvls, n = 150) {
       sex_category          = top_level(df$sex_category),
       race_ethnicity_simple = top_level(df$race_ethnicity_simple),
       svi_overall           = safe_mean(df$svi_overall),
-
+      
       # NEW tract-level ACS covariates
       acs_median_income   = safe_mean(df$acs_median_income),
       acs_pct_lt_hs       = safe_mean(df$acs_pct_lt_hs),
       acs_unemp_rate_pct  = safe_mean(df$acs_unemp_rate_pct),
       acs_pct_insured     = safe_mean(df$acs_pct_insured),
-
+      
       # coerce to model's factor levels
       arf_subtype = factor(arf_subtype, levels = arf_lvls),
       sex_category = factor(sex_category, levels = levels(df$sex_category)),
@@ -1199,23 +1202,164 @@ no2_complete <- no2 %>%
   bind_rows(no2_2018) %>%
   arrange(GEOID, year)
 
+# years <- 2018:2024
+# 
+# pop_data <- map_dfr(years, function(y) {
+#   get_estimates(
+#     geography = "county",
+#     product = "population", 
+#     year = y,
+#     geometry = FALSE
+#   ) %>%
+#     mutate(year = y)
+# })
+# 
+# pops <- c("POP", "POPESTIMATE")
+# 
+# pop_data_clean <- pop_data %>%
+#   filter(variable %in% pops) %>%
+#   dplyr::select(GEOID, NAME, year, population = value)
+
+################
+# Fix with manual abstraction
+################
+
+# Set the correct path
+# Use your repo variable to construct the census path
+census_path <- file.path(repo, "exposome")
+
+# Function to read and process the census CSV files
+process_census_files <- function(years, path) {
+  
+  # Initialize empty dataframe
+  all_data <- data.frame()
+  
+  for (y in years) {
+    message(paste("Processing year:", y))
+    
+    # Construct the full file path
+    filename <- file.path(path, paste0("co-est", y, "-alldata.csv"))
+    
+    # Check if file exists
+    if (!file.exists(filename)) {
+      warning(paste("File not found:", filename))
+      next  # Skip to next year
+    }
+    
+    # Read the CSV file
+    df <- read_csv(filename, show_col_types = FALSE)
+    
+    message(paste("  File has", nrow(df), "rows and", ncol(df), "columns"))
+    
+    # Extract the population estimate for the specific year
+    pop_col <- paste0("POPESTIMATE", y)
+    
+    # Check what columns are available
+    pop_cols_available <- grep("POPESTIMATE", names(df), value = TRUE)
+    
+    # Some files might not have the exact year column
+    if (!pop_col %in% names(df)) {
+      # For 2021-2024, the 2020 file might have these years
+      if (y <= 2020 && length(pop_cols_available) > 0) {
+        # Use the appropriate column if it exists
+        if (pop_col %in% pop_cols_available) {
+          # Column exists, use it
+        } else {
+          warning(paste("Column", pop_col, "not found, skipping year", y))
+          next
+        }
+      } else {
+        warning(paste("Column", pop_col, "not found, skipping year", y))
+        next
+      }
+    }
+    
+    # Process the data to match your desired format
+    result <- df %>%
+      filter(COUNTY != "000") %>%  # Remove state totals
+      mutate(
+        GEOID = paste0(sprintf("%02d", as.numeric(STATE)), 
+                       sprintf("%03d", as.numeric(COUNTY))),
+        NAME = paste0(CTYNAME, ", ", STNAME),
+        year = y,
+        population = .[[pop_col]]
+      ) %>%
+      dplyr::select(GEOID, NAME, year, population)
+    
+    message(paste("  Processed", nrow(result), "counties for year", y))
+    
+    # Combine with previous data
+    all_data <- bind_rows(all_data, result)
+  }
+  
+  return(all_data)
+}
+
+# Process years 2018-2024
 years <- 2018:2024
+pop_data_clean <- process_census_files(years, census_path)
 
-pop_data <- map_dfr(years, function(y) {
-  get_estimates(
-    geography = "county",
-    product = "population", 
-    year = y,
-    geometry = FALSE
-  ) %>%
-    mutate(year = y)
-})
+# If that didn't work for all years, try reading from the files you have
+# and extracting multiple years from each file
+if (nrow(pop_data_clean) == 0 || length(unique(pop_data_clean$year)) < length(2018:2024)) {
+  
+  message("\nTrying alternative approach - reading all files and extracting years...")
+  
+  # List all census files in the directory
+  census_files <- list.files(census_path, pattern = "co-est.*-alldata\\.csv", full.names = TRUE)
+  message(paste("Found", length(census_files), "files"))
+  
+  pop_data_clean <- map_dfr(census_files, function(file) {
+    message(paste("\nReading:", basename(file)))
+    
+    df <- read_csv(file, show_col_types = FALSE)
+    
+    # Extract data for years 2018-2024 from each file
+    years_to_extract <- 2018:2024
+    
+    map_dfr(years_to_extract, function(y) {
+      pop_col <- paste0("POPESTIMATE", y)
+      
+      if (pop_col %in% names(df)) {
+        message(paste("  Extracting year", y))
+        
+        df %>%
+          filter(COUNTY != "000") %>%
+          mutate(
+            GEOID = paste0(sprintf("%02d", as.numeric(STATE)), 
+                           sprintf("%03d", as.numeric(COUNTY))),
+            NAME = paste0(CTYNAME, ", ", STNAME),
+            year = y,
+            population = .[[pop_col]]
+          ) %>%
+          dplyr::select(GEOID, NAME, year, population)
+      } else {
+        return(NULL)
+      }
+    })
+  }) %>%
+    distinct(GEOID, year, .keep_all = TRUE)  # Remove any duplicates
+}
 
-pops <- c("POP", "POPESTIMATE")
+# Check the result
+if (nrow(pop_data_clean) > 0) {
+  message("\nSuccessfully processed data:")
+  
+  pop_data_clean %>%
+    group_by(year) %>%
+    summarise(
+      n_counties = n(),
+      total_pop = sum(population, na.rm = TRUE),
+      avg_pop = mean(population, na.rm = TRUE)
+    ) %>%
+    print()
+  
+  # Show structure
+  glimpse(pop_data_clean)
+} else {
+  print("No data was processed. Check file names and paths.")
+}
 
-pop_data_clean <- pop_data %>%
-  filter(variable %in% pops) %>%
-  dplyr::select(GEOID, NAME, year, population = value)
 
 
 arf_counts <- arf_exp %>%
@@ -1528,7 +1672,7 @@ arf_counts_export <- analysis_df %>%
   dplyr::select(GEOID, dplyr::any_of("NAME"), year, arf_cases) %>%
   arrange(GEOID, year)
 
-write_csv(arf_counts_export, file.path(out_dir, "arf_counts_by_county_year.csv"))
+write_excel_csv(arf_counts_export, file.path(out_dir, "arf_counts_by_county_year.csv"))
 
 
 
@@ -1717,13 +1861,13 @@ pred_vent_race <- bind_cols(grid_race, pred_ci_nb(fit_vent, grid_race)) %>%
 safe_cols <- c("site_id","outcome","no2_10","arf_subtype","sex_category",
                "race_ethnicity_simple","pred","lo","hi")
 
-write_csv(dplyr::select(pred_inhosp_sex, all_of(safe_cols)), file.path(out_dir, "site_preds_inhosp_by_sex.csv"))
-write_csv(dplyr::select(pred_30d_sex,    all_of(safe_cols)), file.path(out_dir, "site_preds_30d_by_sex.csv"))
-write_csv(dplyr::select(pred_vent_sex,   all_of(safe_cols)), file.path(out_dir, "site_preds_vent_by_sex.csv"))
+write_excel_csv(dplyr::select(pred_inhosp_sex, all_of(safe_cols)), file.path(out_dir, "site_preds_inhosp_by_sex.csv"))
+write_excel_csv(dplyr::select(pred_30d_sex,    all_of(safe_cols)), file.path(out_dir, "site_preds_30d_by_sex.csv"))
+write_excel_csv(dplyr::select(pred_vent_sex,   all_of(safe_cols)), file.path(out_dir, "site_preds_vent_by_sex.csv"))
 
-write_csv(dplyr::select(pred_inhosp_race, all_of(safe_cols)), file.path(out_dir, "site_preds_inhosp_by_race.csv"))
-write_csv(dplyr::select(pred_30d_race,    all_of(safe_cols)), file.path(out_dir, "site_preds_30d_by_race.csv"))
-write_csv(dplyr::select(pred_vent_race,   all_of(safe_cols)), file.path(out_dir, "site_preds_vent_by_race.csv"))
+write_excel_csv(dplyr::select(pred_inhosp_race, all_of(safe_cols)), file.path(out_dir, "site_preds_inhosp_by_race.csv"))
+write_excel_csv(dplyr::select(pred_30d_race,    all_of(safe_cols)), file.path(out_dir, "site_preds_30d_by_race.csv"))
+write_excel_csv(dplyr::select(pred_vent_race,   all_of(safe_cols)), file.path(out_dir, "site_preds_vent_by_race.csv"))
 
 message("Done. Outputs written to: ", normalizePath(out_dir))
 
@@ -1840,12 +1984,12 @@ print(summary_comp)
 
 # Uncomment to write out
 # Correct paths + proper interpolation
-readr::write_csv(
+readr::write_excel_csv(
   summary_auc,
   file.path(cfg$output_dir, sprintf("auc_sequential_%s.csv", seq_label))
 )
 
-readr::write_csv(
+readr::write_excel_csv(
   summary_comp,
   file.path(cfg$output_dir, sprintf("auc_diffs_delong_%s.csv", seq_label))
 )
@@ -3479,6 +3623,7 @@ save_plot(p_dec, if (no2_var == "no2_12m_mean") "no2_deciles_vs_survival_12m" el
           w = 9, h = 6)
 
 
+
 # ---- helpers (only define if missing) -----------------------------------------------------------
 if (!exists("pred_ci_log", mode = "function")) {
   pred_ci_log <- function(fit, newdata) {
@@ -3653,7 +3798,7 @@ plot_survival_by_decile <- function(
 
 # ================== Run the three/four plots you asked for ==================
 plots_made <- list()
-common_ylims <- c(0.80, 0.99)  # tweak if you want a different window
+common_ylims <- c(0.70, 0.99)  # tweak if you want a different window
 
 # NO2 cumulative
 if ("no2_mean_cummean_2018toYr" %in% names(arf_exp)) {
@@ -3704,6 +3849,725 @@ if ("pm25_12m_mean" %in% names(arf_exp)) {
     y_zoom = common_ylims
   )
 }
+
+# =========================
+# A) NATIONAL CUTPOINTS
+# =========================
+stopifnot(exists("no2"), exists("pm25"), exists("arf_exp"))
+
+nat_no2  <- no2  %>% dplyr::filter(!is.na(no2_mean))  %>% dplyr::pull(no2_mean)
+nat_pm25 <- pm25 %>% dplyr::filter(!is.na(pm25_mean)) %>% dplyr::pull(pm25_mean)
+
+cuts_no2  <- quantile(nat_no2,  probs = seq(0, 1, 0.1), na.rm = TRUE)
+cuts_pm25 <- quantile(nat_pm25, probs = seq(0, 1, 0.1), na.rm = TRUE)
+
+# Optional: national Z-scores (for modeling comparability)
+no2_nat_mu  <- mean(nat_no2, na.rm = TRUE);  no2_nat_sd  <- sd(nat_no2,  na.rm = TRUE)
+pm25_nat_mu <- mean(nat_pm25, na.rm = TRUE); pm25_nat_sd <- sd(nat_pm25, na.rm = TRUE)
+
+arf_exp <- arf_exp %>%
+  mutate(
+    no2_12m_z   = (no2_12m_mean   - no2_nat_mu)  / no2_nat_sd,
+    no2_cum_z   = (no2_mean_cummean_2018toYr - no2_nat_mu)  / no2_nat_sd,
+    pm25_12m_z  = (pm25_12m_mean  - pm25_nat_mu) / pm25_nat_sd,
+    pm25_cum_z  = (pm25_mean_cummean_2018toYr - pm25_nat_mu) / pm25_nat_sd
+  )
+
+# =========================
+# B) PLOTTER: NATIONAL BINS, NUMERIC X
+# =========================
+
+# safe predict helper (uses your existing index_year factor handling if present)
+if (!exists("make_grid_for", mode = "function")) {
+  make_grid_for <- function(df, fit, xvar, n = 25) {
+    top_level <- function(x) { if (is.factor(x)) x <- droplevels(x); tb <- sort(table(x), TRUE); if (length(tb)) names(tb)[1] else NA_character_ }
+    safe_mean <- function(x) { m <- mean(x, na.rm = TRUE); if (is.nan(m)) NA_real_ else m }
+    rng <- df %>% summarize(lo = quantile(.data[[xvar]], 0.01, na.rm = TRUE),
+                            hi = quantile(.data[[xvar]], 0.99, na.rm = TRUE))
+    base <- tibble("{xvar}" := seq(rng$lo, rng$hi, length.out = n))
+    
+    # pick up model terms
+    tl  <- attr(terms(fit), "term.labels")
+    raw <- ifelse(grepl("\\(", tl), sub(".*\\((.*)\\).*", "\\1", tl), tl)
+    if (any(grepl("^factor\\s*\\(\\s*index_year\\s*\\)$", tl))) raw <- union(raw, "index_year")
+    raw <- unique(raw)
+    
+    # mode year from model levels if present
+    mode_year <- function() {
+      lev <- fit$xlevels[["factor(index_year)"]]
+      if (!is.null(lev)) {
+        yr <- suppressWarnings(as.integer(lev[1])); if (!is.na(yr)) return(yr)
+      }
+      yy <- as.integer(df$index_year); yy <- yy[is.finite(yy)]
+      if (!length(yy)) return(2020L)
+      as.integer(names(sort(table(yy), TRUE))[1])
+    }
+    
+    for (v in raw) {
+      if (v %in% names(base)) next
+      if (v == "index_year") { base[[v]] <- mode_year(); next }
+      if (v %in% names(df)) {
+        if (is.numeric(df[[v]])) base[[v]] <- safe_mean(df[[v]])
+        else { base[[v]] <- factor(top_level(df[[v]]), levels = levels(df[[v]])) }
+      }
+    }
+    # coerce to model factor levels where known (except index_year which we set numeric)
+    if (!is.null(fit$xlevels)) {
+      for (nm in names(fit$xlevels)) {
+        if (nm == "factor(index_year)") next
+        if (nm %in% names(base)) base[[nm]] <- factor(base[[nm]], levels = fit$xlevels[[nm]])
+      }
+    }
+    base
+  }
+}
+
+if (!exists("pred_ci_log", mode = "function")) {
+  pred_ci_log <- function(fit, newdata) {
+    pr <- predict(fit, newdata = newdata, type = "link", se.fit = TRUE)
+    tibble(pred = plogis(pr$fit),
+           lo   = plogis(pr$fit - 1.96*pr$se.fit),
+           hi   = plogis(pr$fit + 1.96*pr$se.fit))
+  }
+}
+
+ensure_logit <- function(xvar, suggested_fit = NULL) {
+  if (!is.null(suggested_fit) && exists(suggested_fit, inherits = TRUE)) {
+    return(get(suggested_fit))
+  }
+  
+  base_covs <- c(
+    "age", "sex_category", "race_ethnicity_simple",
+    "svi_overall", "acs_median_income", "acs_pct_lt_hs",
+    "acs_unemp_rate_pct", "acs_pct_insured"
+  )
+  
+  terms_vec <- c(xvar, base_covs)
+  if ("index_year" %in% names(arf_exp)) {
+    terms_vec <- c(terms_vec, "factor(index_year)")
+  }
+  
+  fml <- reformulate(termlabels = terms_vec, response = "in_hosp_death")
+  glm(fml, data = arf_exp, family = binomial())
+}
+
+plot_survival_by_nat_bins <- function(xvar, nat_cuts, x_lab, title_lab,
+                                      fit_name = NULL, y_zoom = c(0.86, 0.94)) {
+  stopifnot(xvar %in% names(arf_exp))
+  
+  dat <- arf_exp %>%
+    filter(!is.na(.data[[xvar]]), !is.na(in_hosp_death)) %>%
+    mutate(survival = 1 - in_hosp_death)
+  
+  # Assign bins using NATIONAL cutpoints; compute *numeric* x location as the
+  # mean exposure among your patients within each national bin
+  bin <- cut(dat[[xvar]],
+             breaks = c(-Inf, as.numeric(nat_cuts[-c(1, length(nat_cuts))]), Inf),
+             labels = 1:10, include.lowest = TRUE, right = TRUE)
+  dat$nat_decile <- as.integer(bin)
+  
+  dec_tbl <- dat %>%
+    group_by(nat_decile) %>%
+    summarise(
+      n         = n(),
+      x_center  = mean(.data[[xvar]], na.rm = TRUE),     # numeric x-axis
+      surv_mean = mean(survival),
+      se        = sqrt(pmax(1e-12, surv_mean * (1 - surv_mean) / n)),
+      surv_lo   = pmax(0, surv_mean - 1.96 * se),
+      surv_hi   = pmin(1, surv_mean + 1.96 * se),
+      .groups = "drop"
+    ) %>% filter(!is.na(nat_decile))
+  
+  # adjusted overlay at those same x positions
+  fit <- ensure_logit(xvar, fit_name)
+  grid <- make_grid_for(arf_exp, fit, xvar, n = nrow(dec_tbl))
+  grid[[xvar]] <- dec_tbl$x_center
+  pred <- pred_ci_log(fit, grid) %>%
+    mutate(x = dec_tbl$x_center,
+           surv_pred = 1 - pred, lo = 1 - hi, hi = 1 - lo)
+  
+  p <- ggplot(dec_tbl, aes(x = x_center, y = surv_mean)) +
+    geom_point(size = 2.6) +
+    geom_errorbar(aes(ymin = surv_lo, ymax = surv_hi), width = 0, alpha = 0.9) +
+    geom_ribbon(data = pred, aes(x = x, ymin = lo, ymax = hi), inherit.aes = FALSE, alpha = 0.18) +
+    geom_line  (data = pred, aes(x = x, y = surv_pred), inherit.aes = FALSE, linewidth = 1.1) +
+    labs(x = x_lab, y = "Survival probability (1 − in-hospital death)",
+         title = title_lab) +
+    coord_cartesian(ylim = y_zoom) +
+    theme_classic(base_size = 13)
+  
+  save_plot(p, gsub("[^[:alnum:]_]+", "_", paste0("natbins_", xvar)))
+  p
+}
+
+# =========================
+# C) RUN THE PLOTS
+# =========================
+plots <- list()
+
+if ("no2_12m_mean" %in% names(arf_exp))
+  plots$no2_12m <- plot_survival_by_nat_bins(
+    xvar = "no2_12m_mean", nat_cuts = cuts_no2,
+    x_lab = "NO\u2082 (ppb)", title_lab = "ICU survival vs NO\u2082 (12-month exposure)"
+  )
+
+if ("no2_mean_cummean_2018toYr" %in% names(arf_exp))
+  plots$no2_cum <- plot_survival_by_nat_bins(
+    xvar = "no2_mean_cummean_2018toYr", nat_cuts = cuts_no2,
+    x_lab = "NO\u2082 (ppb)", title_lab = "ICU survival vs NO\u2082 (cumulative, 2018 to index)"
+  )
+
+if ("pm25_12m_mean" %in% names(arf_exp))
+  plots$pm25_12m <- plot_survival_by_nat_bins(
+    xvar = "pm25_12m_mean", nat_cuts = cuts_pm25,
+    x_lab = "PM\u2082\u00B7\u2085 (\u00B5g/m\u00B3)",
+    title_lab = "ICU survival vs PM\u2082\u00B7\u2085 (12-month exposure)"
+  )
+
+if ("pm25_mean_cummean_2018toYr" %in% names(arf_exp))
+  plots$pm25_cum <- plot_survival_by_nat_bins(
+    xvar = "pm25_mean_cummean_2018toYr", nat_cuts = cuts_pm25,
+    x_lab = "PM\u2082\u00B7\u2085 (\u00B5g/m\u00B3)",
+    title_lab = "ICU survival vs PM\u2082\u00B7\u2085 (cumulative, 2018 to index)"
+  )
+
+
+# ---------- Build per-encounter time-to-event ----------
+stopifnot(exists("support_class"), exists("icu_segs"), exists("cohort_all"), exists("patient"))
+
+# ICU out per encounter
+icu_end <- icu_segs %>%
+  group_by(hospitalization_id) %>%
+  summarise(icu_out = max(out_ts, na.rm = TRUE), .groups = "drop")
+
+# Last invasive ventilator time per encounter
+last_imv <- support_class %>%
+  filter(is_invasive_vent) %>%
+  group_by(hospitalization_id) %>%
+  summarise(last_imv = max(rec_time, na.rm = TRUE), .groups = "drop")
+
+# Device immediately before ICU discharge
+last_dev_before_out <- support_class %>%
+  inner_join(icu_end, by = "hospitalization_id") %>%
+  filter(rec_time <= icu_out) %>%
+  arrange(hospitalization_id, rec_time) %>%
+  group_by(hospitalization_id) %>%
+  slice_tail(n = 1) %>%
+  ungroup() %>%
+  transmute(hospitalization_id,
+            dev_before_out = case_when(
+              is_invasive_vent ~ "imv",
+              is_niv          ~ "niv",
+              TRUE            ~ "lowflow_or_ra"
+            ))
+
+# Death time (POSIXct)
+death_time <- cohort_all %>%
+  left_join(patient %>% dplyr::select(patient_id, death_dttm), by = "patient_id") %>%
+  transmute(hospitalization_id, index_admit, death_ts = safe_ts(death_dttm))
+
+tte_base <- cohort_all %>%
+  dplyr::select(patient_id, hospitalization_id, index_admit) %>%
+  left_join(icu_end,             by = "hospitalization_id") %>%
+  left_join(last_imv,            by = "hospitalization_id") %>%
+  left_join(last_dev_before_out, by = "hospitalization_id") %>%
+  left_join(death_time %>% dplyr::select(hospitalization_id, death_ts), by = "hospitalization_id")
+
+# Event classification (first among {death, extubation, persistent RF})
+tte <- tte_base %>%
+  mutate(
+    # candidate absolute times
+    t_extub_abs = ifelse(!is.na(last_imv) & !is.na(icu_out) &
+                           dev_before_out %in% c("niv","lowflow_or_ra") &
+                           last_imv < icu_out, last_imv, as.POSIXct(NA)),
+    t_prf_abs   = ifelse(!is.na(icu_out) & dev_before_out == "imv", icu_out, as.POSIXct(NA)),
+    t_death_abs = death_ts,
+    
+    # earliest event time
+    first_time_abs = pmin(t_death_abs, t_extub_abs, t_prf_abs, na.rm = TRUE),
+    
+    status = case_when(
+      !is.na(t_death_abs) & (is.na(t_extub_abs) | t_death_abs <= t_extub_abs) &
+        (is.na(t_prf_abs)  | t_death_abs <= t_prf_abs) ~ 2L,  # death wins if earliest
+      !is.na(t_extub_abs) & (is.na(t_prf_abs)  | t_extub_abs <= t_prf_abs) ~ 1L,
+      !is.na(t_prf_abs)  ~ 3L,
+      TRUE ~ 0L
+    ),
+    
+    # censor at ICU out if no event; fallback to index_admit for missing times
+    censor_abs = ifelse(status == 0L, icu_out, as.POSIXct(NA)) %>% as.POSIXct(origin = "1970-01-01", tz = attr(index_admit, "tzone")),
+    event_abs  = ifelse(status == 0L, censor_abs, first_time_abs) %>% as.POSIXct(origin = "1970-01-01", tz = attr(index_admit, "tzone")),
+    
+    # analysis time in DAYS from index_admit
+    ftime = as.numeric(difftime(event_abs, index_admit, units = "days"))
+  ) %>%
+  # drop encounters with no follow-up time
+  filter(is.finite(ftime), ftime >= 0)
+
+# Attach exposures (pick the ones you want to analyze)
+tte <- tte %>%
+  left_join(arf_exp %>%
+              dplyr::select(hospitalization_id,
+                     no2_12m_mean, pm25_12m_mean,
+                     no2_mean_cummean_2018toYr, pm25_mean_cummean_2018toYr,
+                     no2_12m_z, pm25_12m_z, no2_cum_z, pm25_cum_z,
+                     age, sex_category, race_ethnicity_simple, index_year,
+                     svi_overall, acs_median_income, acs_pct_lt_hs, acs_unemp_rate_pct, acs_pct_insured),
+            by = "hospitalization_id")
+
+# Overall CIFs (all patients)
+ci_all <- cmprsk::cuminc(ftime = tte$ftime, fstatus = tte$status, cencode = 0)
+
+# CIFs by national exposure quartiles, example: NO2 12m
+q_no2 <- quantile(nat_no2, probs = c(0, .25, .5, .75, 1), na.rm = TRUE)
+tte$no2_12m_q <- cut(tte$no2_12m_mean, breaks = q_no2, include.lowest = TRUE, labels = paste0("Q", 1:4))
+
+ci_no2_12m_byq <- cmprsk::cuminc(ftime = tte$ftime, fstatus = tte$status,
+                                 group = tte$no2_12m_q, cencode = 0)
+
+# CIFs by national exposure quartiles, example: PM2.5 cumulative
+q_pm25 <- quantile(nat_pm25, probs = c(0, .25, .5, .75, 1), na.rm = TRUE)
+tte$pm25_cum_q <- cut(tte$pm25_mean_cummean_2018toYr, breaks = q_pm25, include.lowest = TRUE, labels = paste0("Q", 1:4))
+ci_pm25_cum_byq <- cmprsk::cuminc(ftime = tte$ftime, fstatus = tte$status,
+                                  group = tte$pm25_cum_q, cencode = 0)
+
+# ---- robust tidier (works with "Q1 2" or "2 Q1" names) ----
+tidy_cuminc <- function(ci, cause = NULL, group = NULL) {
+  stopifnot(inherits(ci, "cuminc"))
+  rows <- lapply(names(ci), function(nm) {
+    x <- ci[[nm]]
+    if (!is.list(x) || is.null(x$time) || is.null(x$est)) return(NULL)
+    toks <- strsplit(nm, "\\s+")[[1]]
+    is_num <- grepl("^[0-9]+$", toks)
+    if (!any(is_num)) { cs <- NA_integer_; grp <- nm
+    } else {
+      idx <- which(is_num)
+      cs  <- as.integer(toks[idx[length(idx)]])        # cause code
+      grp <- trimws(paste(toks[-idx], collapse = " ")) # group label
+      if (identical(grp, "")) grp <- "All"
+    }
+    data.frame(name = nm, time = x$time, est = x$est,
+               var = if (!is.null(x$var)) x$var else NA_real_,
+               cause = cs, group = grp, stringsAsFactors = FALSE)
+  })
+  out <- dplyr::bind_rows(rows)
+  if (!is.null(cause)) out <- dplyr::filter(out, cause %in% !!cause)
+  if (!is.null(group)) out <- dplyr::filter(out, group %in% !!group)
+  out
+}
+
+# ---- make COHORT tertiles with value ranges in labels; order High→Mid→Low ----
+make_tertiles <- function(x, unit = "", digits = 1, prefix = NULL) {
+  x_ok <- x[is.finite(x)]
+  br   <- unique(quantile(x_ok, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE))
+  if (length(br) < 4) warning("Ties collapsed some cutpoints; tertiles may not be perfectly balanced.")
+  k    <- length(br) - 1L
+  fmt  <- function(v) formatC(v, format = "f", digits = digits)
+  rng  <- paste0("[", fmt(br[-length(br)]), ", ", fmt(br[-1]), if (unit != "") paste0(" ", unit), "]")
+  
+  # Ascending labels first, then relevel to High→Mid→Low
+  labs_asc <- paste(rng)
+  grp      <- cut(x, breaks = br, include.lowest = TRUE, labels = labs_asc[seq_len(k)])
+  
+  # Build High/Mid/Low labels with ranges
+  hml <- c("High", "Mid", "Low")[seq_len(k)]
+  labs_hml <- paste0(hml, if (!is.null(prefix)) paste0(" ", prefix) else "", " ", labs_asc[seq_len(k)])
+  
+  # map ascending bins 1..k to Low..High, then reorder to High→…→Low
+  # (bin 1 = lowest values)
+  map_levels <- setNames(labs_hml[rev(seq_len(k))], levels(grp))
+  grp2 <- factor(map_levels[as.character(grp)],
+                 levels = labs_hml[1:k])  # High, Mid, Low order in legend
+  
+  list(fct = grp2, breaks = br, labels = labs_hml[1:k])
+}
+
+# ---- CIF plot helper; preserves High→Mid→Low order in legend ----
+plot_cif_grouped <- function(tte_df, group_var, cause = 2,
+                             legend_lab = "Group", title_lab = NULL,
+                             x_max_days = 90) {
+  stopifnot(all(c("ftime","status") %in% names(tte_df)))
+  gvec <- tte_df[[group_var]]
+  lvl_order <- levels(droplevels(gvec))
+  
+  ci <- cmprsk::cuminc(ftime = tte_df$ftime, fstatus = tte_df$status,
+                       group = gvec, cencode = 0)
+  
+  df <- tidy_cuminc(ci, cause = cause) %>%
+    dplyr::filter(is.finite(time), is.finite(est)) %>%
+    dplyr::mutate(group = factor(group, levels = lvl_order)) %>%
+    dplyr::arrange(group, time)
+  
+  y_top <- max(df$est, na.rm = TRUE); if (!is.finite(y_top) || y_top <= 0) y_top <- 0.05
+  
+  ggplot(df, aes(time, est, color = group, group = group)) +
+    geom_step(linewidth = 1) +
+    coord_cartesian(xlim = c(0, x_max_days),
+                    ylim = c(0, y_top * 1.05)) +
+    labs(
+      x = "Days since index admission",
+      y = dplyr::case_when(
+        cause == 1 ~ "Cumulative incidence of successful extubation",
+        cause == 2 ~ "Cumulative incidence of death",
+        cause == 3 ~ "Cumulative incidence of persistent respiratory failure",
+        TRUE       ~ "Cumulative incidence"
+      ),
+      color = legend_lab,
+      title = title_lab
+    ) +
+    theme_classic(base_size = 13)
+}
+
+# =========================
+# Build tertiles (High→Mid→Low) and plot
+# =========================
+
+# NO2 — 12-month (ppb)
+bins_no2_12m <- make_tertiles(tte$no2_12m_mean, unit = "ppb", digits = 1, prefix = "NO\u2082")
+tte$no2_12m_ter <- bins_no2_12m$fct
+p_no2_12m_death <- plot_cif_grouped(
+  tte %>% filter(is.finite(ftime), ftime >= 0, !is.na(no2_12m_ter)),
+  group_var = "no2_12m_ter", cause = 2,
+  legend_lab = "NO\u2082 (12m) tertile (ppb)",
+  title_lab  = "CIF of death by NO\u2082 (12-month) cohort tertiles"
+)
+
+# NO2 — cumulative (ppb)
+bins_no2_cum <- make_tertiles(tte$no2_mean_cummean_2018toYr, unit = "ppb", digits = 1, prefix = "NO\u2082")
+tte$no2_cum_ter <- bins_no2_cum$fct
+p_no2_cum_death <- plot_cif_grouped(
+  tte %>% filter(is.finite(ftime), ftime >= 0, !is.na(no2_cum_ter)),
+  group_var = "no2_cum_ter", cause = 2,
+  legend_lab = "NO\u2082 (cumulative) tertile (ppb)",
+  title_lab  = "CIF of death by NO\u2082 (cumulative) cohort tertiles"
+)
+
+# PM2.5 — 12-month (µg/m³)
+bins_pm25_12m <- make_tertiles(tte$pm25_12m_mean, unit = "\u00B5g/m\u00B3", digits = 2, prefix = "PM\u2082\u00B7\u2085")
+tte$pm25_12m_ter <- bins_pm25_12m$fct
+p_pm25_12m_death <- plot_cif_grouped(
+  tte %>% filter(is.finite(ftime), ftime >= 0, !is.na(pm25_12m_ter)),
+  group_var = "pm25_12m_ter", cause = 2,
+  legend_lab = "PM\u2082\u00B7\u2085 (12m) tertile (\u00B5g/m\u00B3)",
+  title_lab  = "CIF of death by PM\u2082\u00B7\u2085 (12-month) cohort tertiles"
+)
+
+# PM2.5 — cumulative (µg/m³)
+bins_pm25_cum <- make_tertiles(tte$pm25_mean_cummean_2018toYr, unit = "\u00B5g/m\u00B3", digits = 2, prefix = "PM\u2082\u00B7\u2085")
+tte$pm25_cum_ter <- bins_pm25_cum$fct
+p_pm25_cum_death <- plot_cif_grouped(
+  tte %>% filter(is.finite(ftime), ftime >= 0, !is.na(pm25_cum_ter)),
+  group_var = "pm25_cum_ter", cause = 2,
+  legend_lab = "PM\u2082\u00B7\u2085 (cumulative) tertile (\u00B5g/m\u00B3)",
+  title_lab  = "CIF of death by PM\u2082\u00B7\u2085 (cumulative) cohort tertiles"
+)
+
+# Save
+save_plot(p_no2_12m_death,  "cif_death_no2_12m_cohort_tertiles")
+save_plot(p_no2_cum_death,  "cif_death_no2_cum_cohort_tertiles")
+save_plot(p_pm25_12m_death, "cif_death_pm25_12m_cohort_tertiles")
+save_plot(p_pm25_cum_death, "cif_death_pm25_cum_cohort_tertiles")
+
+# --- (Re)build tertiles if they’re not already on `tte` -----------------------
+if (!"no2_12m_ter" %in% names(tte)) {
+  bins_no2_12m <- make_tertiles(tte$no2_12m_mean, unit = "ppb", digits = 1, prefix = "NO\u2082")
+  tte$no2_12m_ter <- bins_no2_12m$fct
+}
+if (!"no2_cum_ter" %in% names(tte)) {
+  bins_no2_cum <- make_tertiles(tte$no2_mean_cummean_2018toYr, unit = "ppb", digits = 1, prefix = "NO\u2082")
+  tte$no2_cum_ter <- bins_no2_cum$fct
+}
+if (!"pm25_12m_ter" %in% names(tte)) {
+  bins_pm25_12m <- make_tertiles(tte$pm25_12m_mean, unit = "\u00B5g/m\u00B3", digits = 2, prefix = "PM\u2082\u00B7\u2085")
+  tte$pm25_12m_ter <- bins_pm25_12m$fct
+}
+if (!"pm25_cum_ter" %in% names(tte)) {
+  bins_pm25_cum <- make_tertiles(tte$pm25_mean_cummean_2018toYr, unit = "\u00B5g/m\u00B3", digits = 2, prefix = "PM\u2082\u00B7\u2085")
+  tte$pm25_cum_ter <- bins_pm25_cum$fct
+}
+
+# Helper to prefilter rows safely
+.prep <- function(df, grp) df %>% filter(is.finite(ftime), ftime >= 0, !is.na(.data[[grp]]))
+
+# =========================
+# A) Successful extubation (cause = 1)
+# =========================
+p_ext_no2_12m <- plot_cif_grouped(
+  .prep(tte, "no2_12m_ter"),
+  group_var = "no2_12m_ter", cause = 1,
+  legend_lab = "NO\u2082 (12m) tertile (ppb)",
+  title_lab  = "CIF of successful extubation by NO\u2082 (12-month) cohort tertiles"
+)
+p_ext_no2_cum <- plot_cif_grouped(
+  .prep(tte, "no2_cum_ter"),
+  group_var = "no2_cum_ter", cause = 1,
+  legend_lab = "NO\u2082 (cumulative) tertile (ppb)",
+  title_lab  = "CIF of successful extubation by NO\u2082 (cumulative) cohort tertiles"
+)
+p_ext_pm25_12m <- plot_cif_grouped(
+  .prep(tte, "pm25_12m_ter"),
+  group_var = "pm25_12m_ter", cause = 1,
+  legend_lab = "PM\u2082\u00B7\u2085 (12m) tertile (\u00B5g/m\u00B3)",
+  title_lab  = "CIF of successful extubation by PM\u2082\u00B7\u2085 (12-month) cohort tertiles"
+)
+p_ext_pm25_cum <- plot_cif_grouped(
+  .prep(tte, "pm25_cum_ter"),
+  group_var = "pm25_cum_ter", cause = 1,
+  legend_lab = "PM\u2082\u00B7\u2085 (cumulative) tertile (\u00B5g/m\u00B3)",
+  title_lab  = "CIF of successful extubation by PM\u2082\u00B7\u2085 (cumulative) cohort tertiles"
+)
+
+save_plot(p_ext_no2_12m,  "cif_extubation_no2_12m_cohort_tertiles")
+save_plot(p_ext_no2_cum,  "cif_extubation_no2_cum_cohort_tertiles")
+save_plot(p_ext_pm25_12m, "cif_extubation_pm25_12m_cohort_tertiles")
+save_plot(p_ext_pm25_cum, "cif_extubation_pm25_cum_cohort_tertiles")
+
+# =========================
+# B) Discharged on IMV / persistent respiratory failure (cause = 3)
+# =========================
+p_prf_no2_12m <- plot_cif_grouped(
+  .prep(tte, "no2_12m_ter"),
+  group_var = "no2_12m_ter", cause = 3,
+  legend_lab = "NO\u2082 (12m) tertile (ppb)",
+  title_lab  = "CIF of persistent respiratory failure by NO\u2082 (12-month) cohort tertiles"
+)
+p_prf_no2_cum <- plot_cif_grouped(
+  .prep(tte, "no2_cum_ter"),
+  group_var = "no2_cum_ter", cause = 3,
+  legend_lab = "NO\u2082 (cumulative) tertile (ppb)",
+  title_lab  = "CIF of persistent respiratory failure by NO\u2082 (cumulative) cohort tertiles"
+)
+p_prf_pm25_12m <- plot_cif_grouped(
+  .prep(tte, "pm25_12m_ter"),
+  group_var = "pm25_12m_ter", cause = 3,
+  legend_lab = "PM\u2082\u00B7\u2085 (12m) tertile (ppb)",
+  title_lab  = "CIF of persistent respiratory failure by PM\u2082\u00B7\u2085 (12-month) cohort tertiles"
+)
+p_prf_pm25_cum <- plot_cif_grouped(
+  .prep(tte, "pm25_cum_ter"),
+  group_var = "pm25_cum_ter", cause = 3,
+  legend_lab = "PM\u2082\u00B7\u2085 (cumulative) tertile (ppb)",
+  title_lab  = "CIF of persistent respiratory failure by PM\u2082\u00B7\u2085 (cumulative) cohort tertiles"
+)
+
+save_plot(p_prf_no2_12m,  "cif_prf_no2_12m_cohort_tertiles")
+save_plot(p_prf_no2_cum,  "cif_prf_no2_cum_cohort_tertiles")
+save_plot(p_prf_pm25_12m, "cif_prf_pm25_12m_cohort_tertiles")
+save_plot(p_prf_pm25_cum, "cif_prf_pm25_cum_cohort_tertiles")
+
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
+#--- Helper: LOCF to daily grid 0..90 for a step function ---------------------
+locf_to_daily <- function(df, t_col = time, y_col = est, max_day = 90) {
+  df <- dplyr::arrange(df, {{t_col}})
+  # ensure time starts at 0 with est=first value (or 0 if missing)
+  if (nrow(df) == 0 || df[[deparse(substitute(t_col))]][1] > 0) {
+    df <- dplyr::bind_rows(
+      tibble::tibble(time = 0, est = if ("est" %in% names(df)) 0 else 0),
+      df
+    )
+  }
+  days <- tibble::tibble(day = 0:max_day)
+  # Step-wise carry forward (right-continuous)
+  merged <- dplyr::full_join(
+    df %>% dplyr::transmute(day = as.integer(floor({{t_col}})), cif = {{y_col}}),
+    days, by = "day"
+  ) %>%
+    dplyr::arrange(day) %>%
+    dplyr::mutate(cif = zoo::na.locf(cif, na.rm = FALSE, fromLast = FALSE)) %>%
+    dplyr::mutate(cif = dplyr::coalesce(cif, 0))
+  merged
+}
+
+# Robust tertiles helper (High → Mid → Low legend order)
+.mk_tertiles3 <- function(x, digits = 2) {
+  x_ok <- x[is.finite(x)]
+  if (!length(x_ok)) stop("No finite values to bin.")
+  br <- quantile(x_ok, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE, names = FALSE)
+  br <- unique(br)
+  if (length(br) < 4) {
+    # fallback if ties collapse cutpoints
+    rng <- range(x_ok, na.rm = TRUE)
+    if (diff(rng) == 0) rng <- rng + c(-1e-6, 1e-6)
+    br <- seq(rng[1], rng[2], length.out = 4)
+  }
+  labs_asc <- paste0("[",
+                     formatC(br[-4], format = "f", digits = digits),
+                     ", ",
+                     formatC(br[-1],  format = "f", digits = digits),
+                     "]")
+  # low→high factor from cut()
+  grp_l2h <- cut(x, breaks = br, include.lowest = TRUE, labels = labs_asc, right = TRUE)
+  lvl_asc <- levels(grp_l2h)  # low, mid, high ranges (ascending)
+  # map to final labels and order High→Mid→Low
+  map <- setNames(paste(c("Low","Mid","High"), lvl_asc), lvl_asc)
+  grp <- factor(map[as.character(grp_l2h)],
+                levels = paste(c("High","Mid","Low"), rev(lvl_asc)))
+  list(fct = grp, breaks = br, labels_asc = lvl_asc)
+}
+build_event_counts <- function(df, group_var = "group", max_day = 90) {
+  stopifnot(all(c("ftime","status", group_var) %in% names(df)))
+  
+  # keep times >= 0; don't force events > max_day into the window
+  df2 <- df %>%
+    dplyr::filter(is.finite(.data$ftime), .data$ftime >= 0) %>%
+    dplyr::mutate(
+      group = .data[[group_var]],
+      day_raw = as.integer(floor(.data$ftime)),   # event/censoring day
+      status  = as.integer(.data$status)
+    )
+  
+  # preserve the incoming group order (e.g., High → Mid → Low)
+  lvl_order <- levels(droplevels(factor(df2$group)))
+  if (is.null(lvl_order)) lvl_order <- sort(unique(df2$group))
+  df2 <- df2 %>% dplyr::mutate(group = factor(group, levels = lvl_order))
+  
+  # counts of events at each exact integer day, within 0..max_day
+  ev <- df2 %>%
+    dplyr::filter(day_raw <= max_day) %>%
+    dplyr::group_by(group, day = day_raw) %>%
+    dplyr::summarise(
+      d1 = sum(status == 1, na.rm = TRUE),
+      d2 = sum(status == 2, na.rm = TRUE),
+      d3 = sum(status == 3, na.rm = TRUE),
+      d0 = sum(status == 0, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # complete grid (every day for every group), fill missing counts with 0
+  grid <- tidyr::expand_grid(
+    group = factor(lvl_order, levels = lvl_order),
+    day   = 0:max_day
+  )
+  
+  ev <- grid %>%
+    dplyr::left_join(ev, by = c("group","day")) %>%
+    dplyr::mutate(dplyr::across(c(d1,d2,d3,d0), ~ dplyr::coalesce(., 0L)))
+  
+  # baseline at-risk count at day 0: all rows in the group (even if their event is > max_day)
+  n_group <- df2 %>%
+    dplyr::count(group, name = "n") %>%
+    tidyr::complete(group = factor(lvl_order, levels = lvl_order), fill = list(n = 0L))
+  
+  # risk set at start of day t: N - cumulative events/censors up to day (t-1)
+  ev <- ev %>%
+    dplyr::left_join(n_group, by = "group") %>%
+    dplyr::arrange(group, day) %>%
+    dplyr::group_by(group) %>%
+    dplyr::mutate(
+      risk_set = n - dplyr::lag(cumsum(d1 + d2 + d3 + d0), default = 0L)
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(group, day, risk_set, d1, d2, d3, d0)
+  
+  # basic sanity: non-negative risk set
+  if (any(ev$risk_set < 0, na.rm = TRUE)) {
+    warning("Computed negative risk_set; check input times/status coding.")
+  }
+  
+  ev
+}
+#--- Main exporter -------------------------------------------------------------
+export_site_cif_plotdfs <- function(tte,
+                                    exposures = list(
+                                      list(var = "no2_12m_mean",               label = "NO2_12m",          unit = "ppb",      digits = 1),
+                                      list(var = "no2_mean_cummean_2018toYr",  label = "NO2_cumulative",   unit = "ppb",      digits = 1),
+                                      list(var = "pm25_12m_mean",              label = "PM25_12m",         unit = "\u00B5g/m\u00B3", digits = 2),
+                                      list(var = "pm25_mean_cummean_2018toYr", label = "PM25_cumulative",  unit = "\u00B5g/m\u00B3", digits = 2)
+                                    ),
+                                    max_day = 90) {
+  
+  stopifnot(all(c("ftime","status") %in% names(tte)))
+  site_plain <- config$site_name %||% "unknown_site"
+  site_id    <- digest(site_plain, algo = "sha1")
+  out_dir    <- file.path(cfg$output_dir, "federated_cif")
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  
+  exposures <- purrr::keep(exposures, ~ .x$var %in% names(tte))
+  if (!length(exposures)) stop("None of the exposure variables were found in `tte`.")
+  
+  for (e in exposures) {
+    v    <- e$var
+    lab  <- e$label
+    un   <- e$unit
+    digs <- e$digits
+    
+    # Build cohort tertiles High→Mid→Low (and remember ranges)
+    bins <- .mk_tertiles3(tte[[v]], digits = digs)
+    grp_col <- paste0(v, "__tertile")
+    tte[[grp_col]] <- bins$fct
+    lvl_order <- levels(bins$fct)  # "High [..]", "Mid [..]", "Low [..]"
+    
+    # cmprsk curves by group
+    keep_rows <- tte %>% dplyr::filter(is.finite(ftime), ftime >= 0, !is.na(.data[[grp_col]]))
+    ci <- cmprsk::cuminc(ftime = keep_rows$ftime,
+                         fstatus = keep_rows$status,
+                         group = keep_rows[[grp_col]],
+                         cencode = 0)
+    
+    # Tidy to long: time/est/var/cause/group
+    df_cif_raw <- tidy_cuminc(ci) %>%
+      dplyr::filter(is.finite(time), is.finite(est), time <= max_day) %>%
+      dplyr::mutate(group = factor(group, levels = lvl_order)) %>%
+      dplyr::arrange(group, cause, time)
+    
+    # Expand each group×cause to daily grid via step-function LOCF
+    df_daily <- df_cif_raw %>%
+      tidyr::nest(.by = c(group, cause)) %>%
+      dplyr::mutate(daily = purrr::map(data, ~ locf_to_daily(.x, t_col = time, y_col = est, max_day = max_day))) %>%
+      dplyr::select(-data) %>%
+      tidyr::unnest(daily)
+    
+    # Per-day risk set + events (exact pooling enabler)
+    ev <- build_event_counts(keep_rows %>% dplyr::rename(group = !!grp_col),
+                             group_var = "group", max_day = max_day) %>%
+      dplyr::mutate(group = factor(group, levels = lvl_order))
+    
+    # Join CIF to counts
+    plotdf <- df_daily %>%
+      dplyr::left_join(ev, by = c("group", "day")) %>%
+      dplyr::mutate(
+        site_id        = site_id,
+        site_name      = site_plain,
+        exposure_var   = v,
+        exposure_label = lab,
+        exposure_group = group,
+        # pretty legend (keep High→Mid→Low labels)
+        legend_label   = as.character(group),
+        unit           = un
+      ) %>%
+      dplyr::select(
+        site_id, site_name,
+        exposure_var, exposure_label, unit,
+        exposure_group, legend_label,
+        cause, day,
+        cif,  # plot-ready step value
+        risk_set, d1, d2, d3, d0
+      ) %>%
+      dplyr::arrange(exposure_group, cause, day)
+    
+    f_out <- file.path(out_dir, paste0("site_cif_plotdf__", lab, ".csv"))
+    readr::write_csv(plotdf, f_out)
+    message("Wrote plot-ready CIF: ", normalizePath(f_out))
+    
+    # Also write the tertile cut table for legends
+    lvl   <- levels(bins$fct)
+    rng   <- stringr::str_extract(lvl, "\\[.*\\]") %>% stringr::str_remove_all("[\\[\\]]")
+    low   <- as.numeric(sub(",.*$", "", rng))
+    high  <- as.numeric(sub("^.*,\\s*", "", rng))
+    bins_tbl <- tibble::tibble(
+      site_id, site_name,
+      exposure_var = v, exposure_label = lab, unit = un,
+      exposure_group = factor(lvl, levels = lvl),
+      lower = low, upper = high,
+      n_in_group = as.integer(table(bins$fct))
+    )
+    readr::write_csv(bins_tbl, file.path(out_dir, paste0("site_exposure_bins__", lab, ".csv")))
+  }
+}
+
+# ---- Run it (after tte is built) ----
+export_site_cif_plotdfs(tte)
 
 
 

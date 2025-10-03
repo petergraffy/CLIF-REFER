@@ -13,7 +13,7 @@ pkgs <- c(
   "rlang","data.table","readr","glue","scales",
   "DiagrammeR","DiagrammeRsvg","rsvg", "tidycensus", "fixest", 
   "marginaleffects", "pscl", "glmmTMB", "digest", "pROC", 
-  "tibble", "forcats", "grid", 'jsonlite'
+  "tibble", "forcats", "grid", 'jsonlite', 'cmprsk'
 )
 pkgs <- unique(pkgs)
 
@@ -21,3 +21,4 @@ pkgs <- unique(pkgs)
 renv::install(pkgs)
 renv::settings$snapshot.type("all")
 renv::snapshot(prompt = FALSE) # Then run snapshot again
+

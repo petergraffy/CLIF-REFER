@@ -443,6 +443,7 @@ arf_exp <- outcomes_exp |> filter(cohort == "ARF") |>
 
 #save_tbl(arf_exp, "arf_exp")
 
+
 # ------------------------------------ 7) Models (Adjusted) --------------------------------------
 # Helper to tidy-save any model
 tidy_and_save <- function(fit, name, exponentiate = FALSE, folder = "models") {
@@ -4569,12 +4570,25 @@ export_site_cif_plotdfs <- function(tte,
   }
 }
 
+
+## missing % in final df 
+missingness_df <- arf_exp |>
+  summarise(across(everything(), 
+                   ~sum(is.na(.)), 
+                   .names = "{.col}_missing")) |>
+  pivot_longer(everything(), 
+               names_to = "column", 
+               values_to = "n_missing") |>
+  mutate(
+    column = str_remove(column, "_missing"),
+    total_rows = nrow(arf_exp),
+    pct_missing = round(100 * n_missing / total_rows, 2)
+  ) 
+
+save_tbl(missingness_df, "missing_pct")
+
 # ---- Run it (after tte is built) ----
 export_site_cif_plotdfs(tte)
-
-
-
-
 
 
 # =========================

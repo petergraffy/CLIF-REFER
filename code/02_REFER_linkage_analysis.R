@@ -4156,33 +4156,42 @@ tidy_cuminc <- function(ci, cause = NULL, group = NULL) {
   out
 }
 
-# ---- make COHORT tertiles with value ranges in labels; order High→Mid→Low ----
-make_tertiles <- function(x, unit = "", digits = 1, prefix = NULL) {
+# =========================
+# Tertiles helper (legend order: High → Mid → Low)
+# =========================
+make_tertiles <- function(x, unit = "", digits = 2, prefix = NULL) {
   x_ok <- x[is.finite(x)]
-  br   <- unique(quantile(x_ok, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE))
-  if (length(br) < 4) warning("Ties collapsed some cutpoints; tertiles may not be perfectly balanced.")
-  k    <- length(br) - 1L
-  fmt  <- function(v) formatC(v, format = "f", digits = digits)
-  rng  <- paste0("[", fmt(br[-length(br)]), ", ", fmt(br[-1]), if (unit != "") paste0(" ", unit), "]")
+  if (!length(x_ok)) stop("No finite values to bin.")
+  br <- quantile(x_ok, c(0, 1/3, 2/3, 1), na.rm = TRUE, names = FALSE)
+  # ensure strictly increasing breaks even with ties
+  if (any(diff(br) <= 0)) {
+    eps <- sqrt(.Machine$double.eps)
+    br <- cummax(br + c(0, eps, 2*eps, 3*eps))
+  }
   
-  # Ascending labels first, then relevel to High→Mid→Low
-  labs_asc <- paste(rng)
-  grp      <- cut(x, breaks = br, include.lowest = TRUE, labels = labs_asc[seq_len(k)])
+  fmt <- function(v) formatC(v, format = "f", digits = digits)
+  rng_txt <- paste0("[", fmt(br[-4]), ", ", fmt(br[-1]),
+                    if (unit != "") paste0(" ", unit), "]")
   
-  # Build High/Mid/Low labels with ranges
-  hml <- c("High", "Mid", "Low")[seq_len(k)]
-  labs_hml <- paste0(hml, if (!is.null(prefix)) paste0(" ", prefix) else "", " ", labs_asc[seq_len(k)])
+  # cut() returns bins low → mid → high
+  bin_l2h <- cut(x, breaks = br, include.lowest = TRUE, labels = rng_txt, right = TRUE)
   
-  # map ascending bins 1..k to Low..High, then reorder to High→…→Low
-  # (bin 1 = lowest values)
-  map_levels <- setNames(labs_hml[rev(seq_len(k))], levels(grp))
-  grp2 <- factor(map_levels[as.character(grp)],
-                 levels = labs_hml[1:k])  # High, Mid, Low order in legend
+  # Build Low/Mid/High labels that match the numeric ranges
+  labs_lmh <- paste0(c("Low","Mid","High"),
+                     if (!is.null(prefix)) paste0(" ", prefix) else "",
+                     " ", rng_txt)
   
-  list(fct = grp2, breaks = br, labels = labs_hml[1:k])
+  # Map ascending bin labels to Low/Mid/High text, then set legend order High → Mid → Low
+  map <- setNames(labs_lmh, levels(bin_l2h))  # low→Low…, mid→Mid…, high→High…
+  grp <- factor(map[as.character(bin_l2h)],
+                levels = rev(labs_lmh))        # High, Mid, Low
+  
+  list(fct = grp, breaks = br, labels = labs_lmh)
 }
 
-# ---- CIF plot helper; preserves High→Mid→Low order in legend ----
+# =========================
+# CIF plotting helper (uses cmprsk::cuminc + tidy_cuminc() you already defined)
+# =========================
 plot_cif_grouped <- function(tte_df, group_var, cause = 2,
                              legend_lab = "Group", title_lab = NULL,
                              x_max_days = 90) {
@@ -4193,18 +4202,18 @@ plot_cif_grouped <- function(tte_df, group_var, cause = 2,
   ci <- cmprsk::cuminc(ftime = tte_df$ftime, fstatus = tte_df$status,
                        group = gvec, cencode = 0)
   
-  df <- tidy_cuminc(ci, cause = cause) %>%
-    dplyr::filter(is.finite(time), is.finite(est)) %>%
-    dplyr::mutate(group = factor(group, levels = lvl_order)) %>%
+  df <- tidy_cuminc(ci, cause = cause) |>
+    dplyr::filter(is.finite(time), is.finite(est)) |>
+    dplyr::mutate(group = factor(group, levels = lvl_order)) |>
     dplyr::arrange(group, time)
   
   y_top <- max(df$est, na.rm = TRUE); if (!is.finite(y_top) || y_top <= 0) y_top <- 0.05
   
-  ggplot(df, aes(time, est, color = group, group = group)) +
-    geom_step(linewidth = 1) +
-    coord_cartesian(xlim = c(0, x_max_days),
-                    ylim = c(0, y_top * 1.05)) +
-    labs(
+  ggplot2::ggplot(df, ggplot2::aes(time, est, color = group, group = group)) +
+    ggplot2::geom_step(linewidth = 1) +
+    ggplot2::coord_cartesian(xlim = c(0, x_max_days),
+                             ylim = c(0, y_top * 1.05), expand = FALSE) +
+    ggplot2::labs(
       x = "Days since index admission",
       y = dplyr::case_when(
         cause == 1 ~ "Cumulative incidence of successful extubation",
@@ -4215,106 +4224,112 @@ plot_cif_grouped <- function(tte_df, group_var, cause = 2,
       color = legend_lab,
       title = title_lab
     ) +
-    theme_classic(base_size = 13)
+    ggplot2::theme_classic(base_size = 13)
 }
 
-# =========================
-# Build tertiles (High→Mid→Low) and plot
-# =========================
+# -------------------------
+# Small helper for clean rows
+# -------------------------
+.prep <- function(df, grp) dplyr::filter(df, is.finite(ftime), ftime >= 0, !is.na(.data[[grp]]))
 
+# =========================
+# Build tertiles (High → Mid → Low) on tte
+# =========================
 # NO2 — 12-month (ppb)
 bins_no2_12m <- make_tertiles(tte$no2_12m_mean, unit = "ppb", digits = 1, prefix = "NO\u2082")
 tte$no2_12m_ter <- bins_no2_12m$fct
-p_no2_12m_death <- plot_cif_grouped(
-  tte %>% filter(is.finite(ftime), ftime >= 0, !is.na(no2_12m_ter)),
-  group_var = "no2_12m_ter", cause = 2,
-  legend_lab = "NO\u2082 (12m) tertile (ppb)",
-  title_lab  = "CIF of death by NO\u2082 (12-month) cohort tertiles"
-)
 
 # NO2 — cumulative (ppb)
 bins_no2_cum <- make_tertiles(tte$no2_mean_cummean_2018toYr, unit = "ppb", digits = 1, prefix = "NO\u2082")
 tte$no2_cum_ter <- bins_no2_cum$fct
-p_no2_cum_death <- plot_cif_grouped(
-  tte %>% filter(is.finite(ftime), ftime >= 0, !is.na(no2_cum_ter)),
-  group_var = "no2_cum_ter", cause = 2,
-  legend_lab = "NO\u2082 (cumulative) tertile (ppb)",
-  title_lab  = "CIF of death by NO\u2082 (cumulative) cohort tertiles"
-)
 
-# PM2.5 — 12-month (µg/m³)
-bins_pm25_12m <- make_tertiles(tte$pm25_12m_mean, unit = "\u00B5g/m\u00B3", digits = 2, prefix = "PM\u2082\u00B7\u2085")
+# PM2.5 — 12-month (µg/m³)  (use subscript digits with a NORMAL period: PM₂.₅)
+bins_pm25_12m <- make_tertiles(tte$pm25_12m_mean, unit = "\u00B5g/m\u00B3", digits = 2, prefix = "PM\u2082.\u2085")
 tte$pm25_12m_ter <- bins_pm25_12m$fct
-p_pm25_12m_death <- plot_cif_grouped(
-  tte %>% filter(is.finite(ftime), ftime >= 0, !is.na(pm25_12m_ter)),
-  group_var = "pm25_12m_ter", cause = 2,
-  legend_lab = "PM\u2082\u00B7\u2085 (12m) tertile (\u00B5g/m\u00B3)",
-  title_lab  = "CIF of death by PM\u2082\u00B7\u2085 (12-month) cohort tertiles"
-)
 
 # PM2.5 — cumulative (µg/m³)
-bins_pm25_cum <- make_tertiles(tte$pm25_mean_cummean_2018toYr, unit = "\u00B5g/m\u00B3", digits = 2, prefix = "PM\u2082\u00B7\u2085")
+bins_pm25_cum <- make_tertiles(tte$pm25_mean_cummean_2018toYr, unit = "\u00B5g/m\u00B3", digits = 2, prefix = "PM\u2082.\u2085")
 tte$pm25_cum_ter <- bins_pm25_cum$fct
+
+# =========================
+# Nice legend titles & plot titles (plotmath with subscripts)
+# =========================
+legend_no2_12m <- expression(NO[2] * " (12m) tertile (ppb)")
+title_no2_12m  <- expression("CIF of death by " * NO[2] * " (12-month) cohort tertiles")
+
+legend_no2_cum <- expression(NO[2] * " (cumulative) tertile (ppb)")
+title_no2_cum  <- expression("CIF of death by " * NO[2] * " (cumulative) cohort tertiles")
+
+legend_pm25_12m <- expression(PM[2.5] * " (12m) tertile (" * mu * "g/m"^3 * ")")
+title_pm25_12m  <- expression("CIF of death by " * PM[2.5] * " (12-month) cohort tertiles")
+
+legend_pm25_cum <- expression(PM[2.5] * " (cumulative) tertile (" * mu * "g/m"^3 * ")")
+title_pm25_cum  <- expression("CIF of death by " * PM[2.5] * " (cumulative) cohort tertiles")
+
+# =========================
+# A) Death (cause = 2)
+# =========================
+p_no2_12m_death <- plot_cif_grouped(
+  .prep(tte, "no2_12m_ter"),
+  group_var = "no2_12m_ter", cause = 2,
+  legend_lab = legend_no2_12m,
+  title_lab  = title_no2_12m
+)
+p_no2_cum_death <- plot_cif_grouped(
+  .prep(tte, "no2_cum_ter"),
+  group_var = "no2_cum_ter", cause = 2,
+  legend_lab = legend_no2_cum,
+  title_lab  = title_no2_cum
+)
+p_pm25_12m_death <- plot_cif_grouped(
+  .prep(tte, "pm25_12m_ter"),
+  group_var = "pm25_12m_ter", cause = 2,
+  legend_lab = legend_pm25_12m,
+  title_lab  = title_pm25_12m
+)
 p_pm25_cum_death <- plot_cif_grouped(
-  tte %>% filter(is.finite(ftime), ftime >= 0, !is.na(pm25_cum_ter)),
+  .prep(tte, "pm25_cum_ter"),
   group_var = "pm25_cum_ter", cause = 2,
-  legend_lab = "PM\u2082\u00B7\u2085 (cumulative) tertile (\u00B5g/m\u00B3)",
-  title_lab  = "CIF of death by PM\u2082\u00B7\u2085 (cumulative) cohort tertiles"
+  legend_lab = legend_pm25_cum,
+  title_lab  = title_pm25_cum
 )
 
-# Save
 save_plot(p_no2_12m_death,  "cif_death_no2_12m_cohort_tertiles")
 save_plot(p_no2_cum_death,  "cif_death_no2_cum_cohort_tertiles")
 save_plot(p_pm25_12m_death, "cif_death_pm25_12m_cohort_tertiles")
 save_plot(p_pm25_cum_death, "cif_death_pm25_cum_cohort_tertiles")
 
-# --- (Re)build tertiles if they’re not already on `tte` -----------------------
-if (!"no2_12m_ter" %in% names(tte)) {
-  bins_no2_12m <- make_tertiles(tte$no2_12m_mean, unit = "ppb", digits = 1, prefix = "NO\u2082")
-  tte$no2_12m_ter <- bins_no2_12m$fct
-}
-if (!"no2_cum_ter" %in% names(tte)) {
-  bins_no2_cum <- make_tertiles(tte$no2_mean_cummean_2018toYr, unit = "ppb", digits = 1, prefix = "NO\u2082")
-  tte$no2_cum_ter <- bins_no2_cum$fct
-}
-if (!"pm25_12m_ter" %in% names(tte)) {
-  bins_pm25_12m <- make_tertiles(tte$pm25_12m_mean, unit = "\u00B5g/m\u00B3", digits = 2, prefix = "PM\u2082\u00B7\u2085")
-  tte$pm25_12m_ter <- bins_pm25_12m$fct
-}
-if (!"pm25_cum_ter" %in% names(tte)) {
-  bins_pm25_cum <- make_tertiles(tte$pm25_mean_cummean_2018toYr, unit = "\u00B5g/m\u00B3", digits = 2, prefix = "PM\u2082\u00B7\u2085")
-  tte$pm25_cum_ter <- bins_pm25_cum$fct
-}
-
-# Helper to prefilter rows safely
-.prep <- function(df, grp) df %>% filter(is.finite(ftime), ftime >= 0, !is.na(.data[[grp]]))
-
 # =========================
-# A) Successful extubation (cause = 1)
+# B) Successful extubation (cause = 1)
 # =========================
+title_no2_12m_ext  <- expression("CIF of successful extubation by " * NO[2] * " (12-month) cohort tertiles")
+title_no2_cum_ext  <- expression("CIF of successful extubation by " * NO[2] * " (cumulative) cohort tertiles")
+title_pm25_12m_ext <- expression("CIF of successful extubation by " * PM[2.5] * " (12-month) cohort tertiles")
+title_pm25_cum_ext <- expression("CIF of successful extubation by " * PM[2.5] * " (cumulative) cohort tertiles")
+
 p_ext_no2_12m <- plot_cif_grouped(
   .prep(tte, "no2_12m_ter"),
   group_var = "no2_12m_ter", cause = 1,
-  legend_lab = "NO\u2082 (12m) tertile (ppb)",
-  title_lab  = "CIF of successful extubation by NO\u2082 (12-month) cohort tertiles"
+  legend_lab = legend_no2_12m,
+  title_lab  = title_no2_12m_ext
 )
 p_ext_no2_cum <- plot_cif_grouped(
   .prep(tte, "no2_cum_ter"),
   group_var = "no2_cum_ter", cause = 1,
-  legend_lab = "NO\u2082 (cumulative) tertile (ppb)",
-  title_lab  = "CIF of successful extubation by NO\u2082 (cumulative) cohort tertiles"
+  legend_lab = legend_no2_cum,
+  title_lab  = title_no2_cum_ext
 )
 p_ext_pm25_12m <- plot_cif_grouped(
   .prep(tte, "pm25_12m_ter"),
   group_var = "pm25_12m_ter", cause = 1,
-  legend_lab = "PM\u2082\u00B7\u2085 (12m) tertile (\u00B5g/m\u00B3)",
-  title_lab  = "CIF of successful extubation by PM\u2082\u00B7\u2085 (12-month) cohort tertiles"
+  legend_lab = legend_pm25_12m,
+  title_lab  = title_pm25_12m_ext
 )
 p_ext_pm25_cum <- plot_cif_grouped(
   .prep(tte, "pm25_cum_ter"),
   group_var = "pm25_cum_ter", cause = 1,
-  legend_lab = "PM\u2082\u00B7\u2085 (cumulative) tertile (\u00B5g/m\u00B3)",
-  title_lab  = "CIF of successful extubation by PM\u2082\u00B7\u2085 (cumulative) cohort tertiles"
+  legend_lab = legend_pm25_cum,
+  title_lab  = title_pm25_cum_ext
 )
 
 save_plot(p_ext_no2_12m,  "cif_extubation_no2_12m_cohort_tertiles")
@@ -4323,37 +4338,43 @@ save_plot(p_ext_pm25_12m, "cif_extubation_pm25_12m_cohort_tertiles")
 save_plot(p_ext_pm25_cum, "cif_extubation_pm25_cum_cohort_tertiles")
 
 # =========================
-# B) Discharged on IMV / persistent respiratory failure (cause = 3)
+# C) Persistent respiratory failure / discharged on IMV (cause = 3)
 # =========================
+title_no2_12m_prf  <- expression("CIF of persistent respiratory failure by " * NO[2] * " (12-month) cohort tertiles")
+title_no2_cum_prf  <- expression("CIF of persistent respiratory failure by " * NO[2] * " (cumulative) cohort tertiles")
+title_pm25_12m_prf <- expression("CIF of persistent respiratory failure by " * PM[2.5] * " (12-month) cohort tertiles")
+title_pm25_cum_prf <- expression("CIF of persistent respiratory failure by " * PM[2.5] * " (cumulative) cohort tertiles")
+
 p_prf_no2_12m <- plot_cif_grouped(
   .prep(tte, "no2_12m_ter"),
   group_var = "no2_12m_ter", cause = 3,
-  legend_lab = "NO\u2082 (12m) tertile (ppb)",
-  title_lab  = "CIF of persistent respiratory failure by NO\u2082 (12-month) cohort tertiles"
+  legend_lab = legend_no2_12m,
+  title_lab  = title_no2_12m_prf
 )
 p_prf_no2_cum <- plot_cif_grouped(
   .prep(tte, "no2_cum_ter"),
   group_var = "no2_cum_ter", cause = 3,
-  legend_lab = "NO\u2082 (cumulative) tertile (ppb)",
-  title_lab  = "CIF of persistent respiratory failure by NO\u2082 (cumulative) cohort tertiles"
+  legend_lab = legend_no2_cum,
+  title_lab  = title_no2_cum_prf
 )
 p_prf_pm25_12m <- plot_cif_grouped(
   .prep(tte, "pm25_12m_ter"),
   group_var = "pm25_12m_ter", cause = 3,
-  legend_lab = "PM\u2082\u00B7\u2085 (12m) tertile (ppb)",
-  title_lab  = "CIF of persistent respiratory failure by PM\u2082\u00B7\u2085 (12-month) cohort tertiles"
+  legend_lab = legend_pm25_12m,  # <- units fixed to µg/m³
+  title_lab  = title_pm25_12m_prf
 )
 p_prf_pm25_cum <- plot_cif_grouped(
   .prep(tte, "pm25_cum_ter"),
   group_var = "pm25_cum_ter", cause = 3,
-  legend_lab = "PM\u2082\u00B7\u2085 (cumulative) tertile (ppb)",
-  title_lab  = "CIF of persistent respiratory failure by PM\u2082\u00B7\u2085 (cumulative) cohort tertiles"
+  legend_lab = legend_pm25_cum,  # <- units fixed to µg/m³
+  title_lab  = title_pm25_cum_prf
 )
 
 save_plot(p_prf_no2_12m,  "cif_prf_no2_12m_cohort_tertiles")
 save_plot(p_prf_no2_cum,  "cif_prf_no2_cum_cohort_tertiles")
 save_plot(p_prf_pm25_12m, "cif_prf_pm25_12m_cohort_tertiles")
 save_plot(p_prf_pm25_cum, "cif_prf_pm25_cum_cohort_tertiles")
+
 
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
@@ -4519,9 +4540,10 @@ export_site_cif_plotdfs <- function(tte,
       tidyr::unnest(daily)
     
     # Per-day risk set + events (exact pooling enabler)
-    ev <- build_event_counts(keep_rows %>% dplyr::rename(group = !!grp_col),
-                             group_var = "group", max_day = max_day) %>%
-      dplyr::mutate(group = factor(group, levels = lvl_order))
+    ev <- build_event_counts(
+      keep_rows %>% dplyr::rename(group = !!rlang::sym(grp_col)),
+      group_var = "group", max_day = max_day
+    ) %>% dplyr::mutate(group = factor(group, levels = lvl_order))
     
     # Join CIF to counts
     plotdf <- df_daily %>%

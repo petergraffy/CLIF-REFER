@@ -394,33 +394,23 @@ outcomes_exp <- outcomes_exp |>
 #save_tbl(outcomes_exp, "outcomes_exposome")
 
 # ------------------------------------ 6) ARF Analytic Frame + Demographics ----------------------
+
 arf_exp <- outcomes_exp |> filter(cohort == "ARF") |>
-  left_join(patient |> dplyr::select(patient_id, race_name, ethnicity_category, sex_category, birth_date),
+  left_join(patient |> dplyr::select(patient_id, race_category, ethnicity_category, sex_category, birth_date),
             by = "patient_id") |>
+  dplyr::mutate(race_category = tolower(race_category),
+                ethnicity_category = tolower(ethnicity_category)) |> 
   mutate(
-    race_ethnicity = case_when(
-      str_to_lower(ethnicity_category) %in% c("hispanic", "latino", "latinx") ~ paste0("Hispanic ", race_name),
-      TRUE ~ paste0("Non-Hispanic ", race_name)
-    ),
-    age = as.numeric(difftime(index_admit, birth_date, units = "days")) / 365.25
-  ) |>
-  mutate(
-    re_low = str_to_lower(race_ethnicity),
-    is_nonhisp = str_detect(re_low, "\\bnon[- ]?hispanic\\b"),
-    is_hisp    = str_detect(re_low, "\\bhispanic\\b") & !is_nonhisp,
-    is_white   = str_detect(re_low, "\\bwhite\\b"),
-    is_black   = str_detect(re_low, "black"),
-    is_asian_any = str_detect(re_low, "asian|mideast|filipino|chinese|korean|vietnamese|pacific islander|samoan"),
+    age = as.numeric(difftime(index_admit, birth_date, units = "days")) / 365.25,
     race_ethnicity_simple = case_when(
-      is_white & is_hisp    ~ "Hispanic White",
-      is_white & is_nonhisp ~ "Non-Hispanic White",
-      is_black & is_hisp    ~ "Hispanic Black",
-      is_black & is_nonhisp ~ "Non-Hispanic Black",
-      is_asian_any          ~ "Asian",
-      TRUE                  ~ "Other"
+      ethnicity_category == "hispanic" & race_category == "white" ~ "Hispanic White",
+      ethnicity_category == "non-hispanic" & race_category == "white" ~ "Non-Hispanic White",
+      ethnicity_category == "hispanic" & race_category %in% c("black or african american", "black", "african american", "african-american") ~ "Hispanic Black",
+      ethnicity_category == "non-hispanic" & race_category %in% c("black or african american", "black", "african american", "african-american") ~ "Non-Hispanic Black",
+      race_category == "asian" ~ "Asian",
+      TRUE ~ "Other"
     )
   ) |>
-  dplyr::select(-re_low, -is_nonhisp, -is_hisp, -is_white, -is_black, -is_asian_any) |>
   mutate(
     sex_category = factor(sex_category),
     race_ethnicity_simple = factor(race_ethnicity_simple,

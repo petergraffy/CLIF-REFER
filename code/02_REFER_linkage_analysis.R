@@ -237,7 +237,6 @@ med_tmp <- med_admin |>
     by = "hospitalization_id"
   )
 
-
 # ------------------------------------ 4) Outcomes ------------------------------------------------
 # ICU LOS
 icu_los <- icu_segs |>
@@ -265,10 +264,8 @@ mortality_instay <- cohort_all |>
 
 # Vent flag + durations
 vent_flag <- support |>
-  mutate(dev_low = tolower(coalesce(device_name, ""))) |>
-  mutate(dev_low_cat = tolower(coalesce(device_category, ""))) |>                                       ############NEW
-  filter(str_detect(dev_low, "\\bvent\\b|vent;|vent ") | str_detect(dev_low_cat, "imv")) |>             ###############CHANGE
-  filter(!str_detect(dev_low, "bipap|cpap|high flow|nasal cannula|\\bnc\\b|trach collar|oxytrach|room air")) |>
+  mutate(dev_low = tolower(device_category)) |>
+  filter(str_detect(dev_low_cat, "imv")) |>           
   semi_join(cohort_all, by = "hospitalization_id") |>
   distinct(hospitalization_id) |>
   mutate(vent_proc_flag = 1L)
@@ -277,16 +274,15 @@ support_tmp <- support |>
   left_join(hospitalization |> dplyr::select(hospitalization_id, patient_id), by = "hospitalization_id") |>
   mutate(
     rec_time = safe_ts(recorded_dttm),
-    dev_low  = tolower(coalesce(.data$device_name, "")),
-    dev_low_cat  = tolower(coalesce(.data$device_category, ""))                                         ###############NEW
+    dev_low  = tolower(device_category)
   ) |>
   filter(!is.na(rec_time)) |>
   semi_join(cohort_all, by = "hospitalization_id")
 
 support_class <- support_tmp |>
   mutate(
-    is_niv = str_detect(dev_low, "bipap|cpap|high flow|hf vent|nasal cannula|\\bnc\\b|venturi|face mask|face tent|trach collar|oxytrach|room air|t-piece|ram cannula|aerosol mask|o2 hood"),
-    has_vent_token = (str_detect(dev_low, "(^|[ ;])vent([ ;]|$)") | str_detect(dev_low_cat, "imv")),    ###############CHANGE
+    is_niv = str_detect(dev_low, "nippv|cpap|high flow nc"),
+    has_vent_token = (str_detect(dev_low_cat, "imv")),  
     is_invasive_vent = has_vent_token & !is_niv
   )
 

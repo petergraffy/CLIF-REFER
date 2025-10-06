@@ -245,31 +245,74 @@ icu_los <- icu_segs |>
   group_by(hospitalization_id) |>
   summarise(icu_los_days = sum(seg_days, na.rm = TRUE), .groups = "drop")
 
-# Hospital LOS
-hosp_los <- cohort_all |>
-  transmute(hospitalization_id,
-            hosp_los_days = as.numeric(difftime(index_discharge, index_admit, units = "days"))) |>
-  left_join(hospitalization |> dplyr::select(hospitalization_id, discharge_category, county_code),
-            by = "hospitalization_id")
+# # Hospital LOS
+# hosp_los <- cohort_all |>
+#   transmute(hospitalization_id,
+#             hosp_los_days = as.numeric(difftime(index_discharge, index_admit, units = "days"))) |>
+#   left_join(hospitalization |> dplyr::select(hospitalization_id, discharge_category, county_code),
+#             by = "hospitalization_id")
+# 
+# vitals_dttm <- vitals |>
+#   filter(hospitalization_id %in% cohort_all$hospitalization_id) |>
+#   group_by(hospitalization_id) |>
+#   mutate(vital_recorded_ts= safe_ts(recorded_dttm)) |> 
+#   summarise(
+#     first_vital_dttm = min(vital_recorded_ts, na.rm = TRUE),
+#     last_vital_dttm = max(vital_recorded_ts, na.rm = TRUE))
+# 
+# final_outcome_times <- hospitalization |> 
+#   dplyr::select(patient_id, hospitalization_id, discharge_category, discharge_dttm) |> 
+#   filter(hospitalization_id %in% cohort_all$hospitalization_id) |> 
+#   mutate(discharge_cat_low = tolower(discharge_category),
+#          discharge_time = safe_ts(discharge_dttm)) |> 
+#   # filter(discharge_category %in% c("expired", "hospice")) |> 
+#   left_join(patient |> dplyr::select(patient_id, death_dttm), by = "patient_id") |>  
+#   left_join(vitals_dttm, by = "hospitalization_id") |>
+#   mutate(
+#     death_dttm_final = case_when(
+#       discharge_cat_low %in% c("expired", "hospice") & is.na(death_dttm) ~ last_vital_dttm,
+#       TRUE ~ death_dttm
+#     )
+#   )
 
-vitals_dttm <- vitals |>
-  filter(hospitalization_id %in% cohort_all$hospitalization_id) |>
-  group_by(hospitalization_id) |>
-  mutate(vital_recorded_ts= safe_ts(recorded_dttm)) |> 
+
+#  vitals_dttm 
+vitals_dttm <- vitals %>%
+  filter(hospitalization_id %in% cohort_all$hospitalization_id) %>%
+  mutate(vital_recorded_ts = safe_ts(recorded_dttm)) %>%
+  filter(!is.na(vital_recorded_ts)) %>%             # ensure real mins/maxes
+  group_by(hospitalization_id) %>%
   summarise(
-    first_vital_dttm = min(vital_recorded_ts, na.rm = TRUE),
-    last_vital_dttm = max(vital_recorded_ts, na.rm = TRUE))
+    first_vital_dttm = min(vital_recorded_ts),
+    last_vital_dttm  = max(vital_recorded_ts),
+    .groups = "drop"
+  )
 
-final_outcome_times <- hospitalization |> 
-  dplyr::select(patient_id, hospitalization_id, discharge_category, discharge_dttm) |> 
-  filter(hospitalization_id %in% cohort_all$hospitalization_id) |> 
-  mutate(discharge_cat_low = tolower(discharge_category),
-         discharge_time = safe_ts(discharge_dttm)) |> 
-  # filter(discharge_category %in% c("expired", "hospice")) |> 
-  left_join(patient |> dplyr::select(patient_id, death_dttm), by = "patient_id") |>  
-  left_join(vitals_dttm, by = "hospitalization_id") |>
+# Hospital LOS (use vitals only; keep the name hosp_los)
+hosp_los <- cohort_all %>%
+  select(hospitalization_id) %>%
+  left_join(vitals_dttm, by = "hospitalization_id") %>%
   mutate(
-    death_dttm_final = case_when(
+    hosp_los_days = as.numeric(difftime(last_vital_dttm, first_vital_dttm, units = "days")),
+    hosp_los_days = ifelse(is.finite(hosp_los_days), pmax(hosp_los_days, 0), NA_real_)
+  ) %>%
+  left_join(
+    hospitalization %>% dplyr::select(hospitalization_id, discharge_category, county_code),
+    by = "hospitalization_id"
+  )
+
+# --- final_outcome_times ---
+final_outcome_times <- hospitalization %>%
+  dplyr::select(patient_id, hospitalization_id, discharge_category, discharge_dttm) %>%
+  filter(hospitalization_id %in% cohort_all$hospitalization_id) %>%
+  mutate(
+    discharge_cat_low = tolower(discharge_category),
+    discharge_time    = safe_ts(discharge_dttm)
+  ) %>%
+  left_join(patient %>% dplyr::select(patient_id, death_dttm), by = "patient_id") %>%
+  left_join(vitals_dttm, by = "hospitalization_id") %>%
+  mutate(
+    death_dttm_final = dplyr::case_when(
       discharge_cat_low %in% c("expired", "hospice") & is.na(death_dttm) ~ last_vital_dttm,
       TRUE ~ death_dttm
     )

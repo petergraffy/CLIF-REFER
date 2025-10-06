@@ -32,6 +32,7 @@ suppressPackageStartupMessages({
   library(grid)
   library(jsonlite)
   library(cmprsk)
+  library(data.table)  # Required for SOFA calculations
 })
 
 # ---- 0.1 Load config (YAML or fallback defaults) ----------------------------------------------
@@ -184,14 +185,15 @@ add_index_fields <- function(df) {
 }
 
 # Core CLIF tables
-patient         <- get_tbl("clif_patient")
-hospitalization <- get_tbl("clif_hospitalization")
-diagnosis       <- get_tbl("clif_hospital_diagnosis")
-support         <- get_tbl("clif_respiratory_support")
-med_admin       <- get_tbl("clif_medication_admin_continuous")
-icu_stay        <- get_tbl("clif_adt")
-vitals          <- get_tbl("clif_vitals")
-labs_df         <- get_tbl("clif_labs")   # avoid name clash with ggplot2::labs()
+patient             <- get_tbl("clif_patient")
+hospitalization     <- get_tbl("clif_hospitalization")
+diagnosis           <- get_tbl("clif_hospital_diagnosis")
+support             <- get_tbl("clif_respiratory_support")
+med_admin           <- get_tbl("clif_medication_admin_continuous")
+icu_stay            <- get_tbl("clif_adt")
+vitals              <- get_tbl("clif_vitals")
+labs_df             <- get_tbl("clif_labs")   # avoid name clash with ggplot2::labs()
+patient_assessments <- get_tbl("clif_patient_assessments")
 
 # ------------------------------------ 2) Build Cohorts ------------------------------------------
 arf_idx    <- cohort_min        |> clean_names() |> add_index_fields() |> mutate(cohort = "ARF")
@@ -245,37 +247,6 @@ icu_los <- icu_segs |>
   group_by(hospitalization_id) |>
   summarise(icu_los_days = sum(seg_days, na.rm = TRUE), .groups = "drop")
 
-# # Hospital LOS
-# hosp_los <- cohort_all |>
-#   transmute(hospitalization_id,
-#             hosp_los_days = as.numeric(difftime(index_discharge, index_admit, units = "days"))) |>
-#   left_join(hospitalization |> dplyr::select(hospitalization_id, discharge_category, county_code),
-#             by = "hospitalization_id")
-# 
-# vitals_dttm <- vitals |>
-#   filter(hospitalization_id %in% cohort_all$hospitalization_id) |>
-#   group_by(hospitalization_id) |>
-#   mutate(vital_recorded_ts= safe_ts(recorded_dttm)) |> 
-#   summarise(
-#     first_vital_dttm = min(vital_recorded_ts, na.rm = TRUE),
-#     last_vital_dttm = max(vital_recorded_ts, na.rm = TRUE))
-# 
-# final_outcome_times <- hospitalization |> 
-#   dplyr::select(patient_id, hospitalization_id, discharge_category, discharge_dttm) |> 
-#   filter(hospitalization_id %in% cohort_all$hospitalization_id) |> 
-#   mutate(discharge_cat_low = tolower(discharge_category),
-#          discharge_time = safe_ts(discharge_dttm)) |> 
-#   # filter(discharge_category %in% c("expired", "hospice")) |> 
-#   left_join(patient |> dplyr::select(patient_id, death_dttm), by = "patient_id") |>  
-#   left_join(vitals_dttm, by = "hospitalization_id") |>
-#   mutate(
-#     death_dttm_final = case_when(
-#       discharge_cat_low %in% c("expired", "hospice") & is.na(death_dttm) ~ last_vital_dttm,
-#       TRUE ~ death_dttm
-#     )
-#   )
-
-
 #  vitals_dttm 
 vitals_dttm <- vitals %>%
   filter(hospitalization_id %in% cohort_all$hospitalization_id) %>%
@@ -299,7 +270,8 @@ hosp_los <- cohort_all %>%
   left_join(
     hospitalization %>% dplyr::select(hospitalization_id, discharge_category, county_code),
     by = "hospitalization_id"
-  )
+  ) |> 
+  select(-county_code)
 
 # --- final_outcome_times ---
 final_outcome_times <- hospitalization %>%
@@ -399,6 +371,54 @@ outcomes <- cohort_all |>
          vent_hours = coalesce(vent_hours, 0), niv_hours = coalesce(niv_hours, 0))
 
 #save_tbl(outcomes, "outcomes")
+# ------------------------------------ SOFA Calculation ------------------------------------------
+# Calculate SOFA scores for the first 24 hours of ICU admission
+
+source(rpath("utils", "sofa_calculator.R"))
+# Get ICU admission times for cohort
+icu_admit_times <- icu_segs |>
+  semi_join(cohort_all, by = "hospitalization_id") |>
+  group_by(hospitalization_id) |>
+  summarise(
+    icu_admit_time = min(in_ts, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Prepare cohort data for SOFA calculation
+sofa_cohort <- cohort_all |>
+  select(hospitalization_id) |>
+  inner_join(icu_admit_times, by = "hospitalization_id")
+
+# Calculate SOFA scores
+sofa_scores <- calculate_sofa(
+  cohort_data = sofa_cohort,
+  vitals_df = vitals,
+  labs_df = labs_df,
+  support_df = support,
+  med_admin_df = med_admin,
+  scores_df = patient_assessments,
+  window_hours = 24,
+  safe_ts = safe_ts
+)
+
+outcomes <- outcomes |>
+  left_join(sofa_scores |>
+              select(hospitalization_id,
+                     sofa_total,
+                     sofa_cv, sofa_coag, sofa_liver,
+                     sofa_renal, sofa_resp, sofa_cns),
+            by = "hospitalization_id") |>
+  mutate(
+    # Set NA SOFA scores to 0 (assuming no organ dysfunction if data missing)
+    across(starts_with("sofa_"), ~ coalesce(., 0))
+  )
+
+cat("\nSOFA Score Summary:\n")
+sofa_summary <- outcomes |>
+  filter(cohort == "ARF") |>
+  select(starts_with("sofa_")) |>
+  summary()
+print(sofa_summary)
 
 # ------------------------------------ 5) Link Exposome ------------------------------------------
 outcomes <- outcomes |>
@@ -483,7 +503,12 @@ arf_exp <- outcomes_exp |> filter(cohort == "ARF") |>
     race_ethnicity_simple = factor(race_ethnicity_simple,
                                    levels = c("Non-Hispanic White","Hispanic White","Non-Hispanic Black","Hispanic Black","Asian","Other"))
   )
-
+arf_exp <- arf_exp |>
+  left_join(
+    outcomes |>
+      select(hospitalization_id, starts_with("sofa_")),
+    by = "hospitalization_id"
+  )
 #save_tbl(arf_exp, "arf_exp")
 
 

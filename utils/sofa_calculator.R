@@ -50,12 +50,12 @@ med_unit_info <- list(
   dobutamine = list(
     required_unit = "mcg/kg/min",
     acceptable_units = c("mcg/kg/min", "mcg/kg/hr", "mg/kg/hr", "mcg/min", 
-                         "mg/hr", "mg/hour", "mcg/kg/hour", "mg/kg/hour",)
+                         "mg/hr", "mg/hour", "mcg/kg/hour", "mg/kg/hour")
   ),
   milrinone = list(
     required_unit = "mcg/kg/min",
     acceptable_units = c("mcg/kg/min", "mcg/kg/hr", "mg/kg/hr", "mcg/min", 
-                         "mg/hr", "mg/hour", "mcg/kg/hour", "mg/kg/hour",)
+                         "mg/hr", "mg/hour", "mcg/kg/hour", "mg/kg/hour")
   )
 )
 

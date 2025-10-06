@@ -270,8 +270,7 @@ hosp_los <- cohort_all %>%
   left_join(
     hospitalization %>% dplyr::select(hospitalization_id, discharge_category, county_code),
     by = "hospitalization_id"
-  ) |> 
-  select(-county_code)
+  )
 
 # --- final_outcome_times ---
 final_outcome_times <- hospitalization %>%
@@ -503,12 +502,13 @@ arf_exp <- outcomes_exp |> filter(cohort == "ARF") |>
     race_ethnicity_simple = factor(race_ethnicity_simple,
                                    levels = c("Non-Hispanic White","Hispanic White","Non-Hispanic Black","Hispanic Black","Asian","Other"))
   )
-arf_exp <- arf_exp |>
-  left_join(
-    outcomes |>
-      select(hospitalization_id, starts_with("sofa_")),
-    by = "hospitalization_id"
-  )
+# arf_exp <- arf_exp |>
+#   left_join(
+#     outcomes |>
+#       select(hospitalization_id, starts_with("sofa_")),
+#     by = "hospitalization_id"
+#   )
+
 #save_tbl(arf_exp, "arf_exp")
 
 
@@ -1092,7 +1092,9 @@ tbl1_vars <- list(
     svi_overall      = "SVI (overall)",
     icu_los_days     = "ICU length of stay (days)",
     hosp_los_days    = "Hospital length of stay (days)",
-    vent_hours       = "Invasive ventilation (hours)"
+    vent_hours       = "Invasive ventilation (hours)",
+    # Add SOFA scores
+    sofa_total       = "SOFA total score"
   ),
   cat = c(
     sex_category            = "Sex",

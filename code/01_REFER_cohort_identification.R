@@ -102,7 +102,7 @@ if (!exists("table_flags")) {
   # fallback if table_flags isn't defined yet
   required_raw <- c("patient","hospitalization","vitals","labs",
                     "medication_admin_continuous","adt","respiratory_support",
-                    "hospital_diagnosis")
+                    "hospital_diagnosis", "patient_assessments")
 } else {
   required_raw <- names(table_flags)[table_flags]
 }

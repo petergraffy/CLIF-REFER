@@ -4,7 +4,7 @@
     "Repositories": [
       {
         "Name": "CRAN",
-        "URL": "https://cran.rstudio.com"
+        "URL": "https://packagemanager.posit.co/cran/latest"
       }
     ]
   },
@@ -1559,7 +1559,8 @@
       "LazyData": "true",
       "KeepSource": "true",
       "NeedsCompilation": "no",
-      "Repository": "CRAN"
+      "Repository": "CRAN",
+      "Encoding": "UTF-8"
     },
     "V8": {
       "Package": "V8",
@@ -5538,16 +5539,16 @@
     },
     "forcats": {
       "Package": "forcats",
-      "Version": "1.0.1",
+      "Version": "1.0.0",
       "Source": "Repository",
       "Title": "Tools for Working with Categorical Variables (Factors)",
-      "Authors@R": "c( person(\"Hadley\", \"Wickham\", , \"hadley@posit.co\", role = c(\"aut\", \"cre\")), person(\"Posit Software, PBC\", role = c(\"cph\", \"fnd\"), comment = c(ROR = \"03wc8by49\")) )",
+      "Authors@R": "c( person(\"Hadley\", \"Wickham\", , \"hadley@rstudio.com\", role = c(\"aut\", \"cre\")), person(\"RStudio\", role = c(\"cph\", \"fnd\")) )",
       "Description": "Helpers for reordering factor levels (including moving specified levels to front, ordering by first appearance, reversing, and randomly shuffling), and tools for modifying factor levels (including collapsing rare levels into other, 'anonymising', and manually 'recoding').",
       "License": "MIT + file LICENSE",
       "URL": "https://forcats.tidyverse.org/, https://github.com/tidyverse/forcats",
       "BugReports": "https://github.com/tidyverse/forcats/issues",
       "Depends": [
-        "R (>= 4.1)"
+        "R (>= 3.4)"
       ],
       "Imports": [
         "cli (>= 3.4.0)",
@@ -5572,10 +5573,10 @@
       "Config/testthat/edition": "3",
       "Encoding": "UTF-8",
       "LazyData": "true",
-      "RoxygenNote": "7.3.3",
+      "RoxygenNote": "7.2.3",
       "NeedsCompilation": "no",
-      "Author": "Hadley Wickham [aut, cre], Posit Software, PBC [cph, fnd] (ROR: <https://ror.org/03wc8by49>)",
-      "Maintainer": "Hadley Wickham <hadley@posit.co>",
+      "Author": "Hadley Wickham [aut, cre], RStudio [cph, fnd]",
+      "Maintainer": "Hadley Wickham <hadley@rstudio.com>",
       "Repository": "CRAN"
     },
     "foreach": {
@@ -10826,6 +10827,42 @@
       "Author": "Torsten Hothorn [aut, cre] (ORCID: <https://orcid.org/0000-0001-8301-0471>), Friedrich Leisch [aut] (ORCID: <https://orcid.org/0000-0001-7278-1983>), Achim Zeileis [aut] (ORCID: <https://orcid.org/0000-0003-0918-3766>)",
       "Maintainer": "Torsten Hothorn <Torsten.Hothorn@R-project.org>",
       "Repository": "CRAN"
+    },
+    "mstate": {
+      "Package": "mstate",
+      "Version": "0.3.3",
+      "Source": "Repository",
+      "Date": "2024-07-03",
+      "Title": "Data Preparation, Estimation and Prediction in Multi-State Models",
+      "Authors@R": "c( person( given = \"Hein\", family = \"Putter\", role = c(\"aut\", \"cre\"), email = \"H.Putter@lumc.nl\"), person( given = \"Liesbeth C.\", family = \"de Wreede\", role = \"aut\" ), person( given = \"Marta\", family = \"Fiocco\", role = \"aut\" ), person( given = \"Ronald B.\", family = \"Geskus\", role = \"ctb\" ), person( given = \"Edouard F.\", family = \"Bonneville\", role = \"aut\" ), person( given = \"Damjan\", family = \"Manevski\", role = \"ctb\" ) )",
+      "Depends": [
+        "survival (>= 3.1)"
+      ],
+      "Imports": [
+        "rlang",
+        "data.table",
+        "lattice",
+        "RColorBrewer",
+        "viridisLite"
+      ],
+      "Suggests": [
+        "cmprsk",
+        "ggplot2",
+        "knitr",
+        "rmarkdown",
+        "relsurv (>= 2.2-5)"
+      ],
+      "Description": "Contains functions for data preparation, descriptives, hazard estimation and prediction with Aalen-Johansen or simulation in competing risks and multi-state models, see Putter, Fiocco, Geskus (2007) <doi:10.1002/sim.2712>.",
+      "License": "GPL (>= 2)",
+      "Encoding": "UTF-8",
+      "URL": "https://github.com/hputter/mstate",
+      "NeedsCompilation": "yes",
+      "Repository": "CRAN",
+      "RoxygenNote": "7.2.3",
+      "BugReports": "https://github.com/hputter/mstate/issues",
+      "VignetteBuilder": "knitr",
+      "Author": "Hein Putter [aut, cre], Liesbeth C. de Wreede [aut], Marta Fiocco [aut], Ronald B. Geskus [ctb], Edouard F. Bonneville [aut], Damjan Manevski [ctb]",
+      "Maintainer": "Hein Putter <H.Putter@lumc.nl>"
     },
     "multcomp": {
       "Package": "multcomp",

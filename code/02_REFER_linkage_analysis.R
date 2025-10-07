@@ -32,7 +32,11 @@ suppressPackageStartupMessages({
   library(grid)
   library(jsonlite)
   library(cmprsk)
-  library(data.table)  # Required for SOFA calculations
+  library(data.table)
+  library(riskRegression)
+  library(survival)
+  library(mstate)
+  library(prodlim)
 })
 
 # ---- 0.1 Load config (YAML or fallback defaults) ----------------------------------------------
@@ -261,7 +265,7 @@ vitals_dttm <- vitals %>%
 
 # Hospital LOS (use vitals only; keep the name hosp_los)
 hosp_los <- cohort_all %>%
-  select(hospitalization_id) %>%
+  dplyr::select(hospitalization_id) %>%
   left_join(vitals_dttm, by = "hospitalization_id") %>%
   mutate(
     hosp_los_days = as.numeric(difftime(last_vital_dttm, first_vital_dttm, units = "days")),
@@ -385,7 +389,7 @@ icu_admit_times <- icu_segs |>
 
 # Prepare cohort data for SOFA calculation
 sofa_cohort <- cohort_all |>
-  select(hospitalization_id) |>
+  dplyr::select(hospitalization_id) |>
   inner_join(icu_admit_times, by = "hospitalization_id")
 
 # Calculate SOFA scores
@@ -402,7 +406,7 @@ sofa_scores <- calculate_sofa(
 
 outcomes <- outcomes |>
   left_join(sofa_scores |>
-              select(hospitalization_id,
+              dplyr::select(hospitalization_id,
                      sofa_total,
                      sofa_cv, sofa_coag, sofa_liver,
                      sofa_renal, sofa_resp, sofa_cns),
@@ -415,7 +419,7 @@ outcomes <- outcomes |>
 cat("\nSOFA Score Summary:\n")
 sofa_summary <- outcomes |>
   filter(cohort == "ARF") |>
-  select(starts_with("sofa_")) |>
+  dplyr::select(starts_with("sofa_")) |>
   summary()
 print(sofa_summary)
 
@@ -4659,6 +4663,147 @@ save_tbl(missingness_df, "missing_pct")
 
 # ---- Run it (after tte is built) ----
 export_site_cif_plotdfs(tte)
+
+# ================================
+# Fine–Gray SHRs — cumulative only
+# No loops, explicit fits
+# ================================
+
+
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
+# ---- 1) Prep (cumulative-only, readable scaling) ----
+tte_fg <- tte %>%
+  filter(is.finite(ftime), ftime >= 0, status %in% 0:3) %>%
+  mutate(
+    event = factor(status, levels = c(0,1,2,3),
+                   labels = c("censor","extub","death","prf")),
+    sex  = factor(sex_category),
+    race = factor(race_ethnicity_simple),
+    year = factor(index_year),
+    
+    # cumulative exposures (units for interpretability)
+    no2_cum_per10 = no2_mean_cummean_2018toYr / 10,   # per 10 ppb
+    pm25_cum_per5 = pm25_mean_cummean_2018toYr / 5,   # per 5 µg/m³
+    
+    # income per $10k
+    acs_median_income_10k = acs_median_income / 10000
+  ) %>%
+  drop_na(
+    ftime, event, age, sex, race, year,
+    svi_overall, acs_median_income_10k,
+    acs_pct_lt_hs, acs_unemp_rate_pct, acs_pct_insured,
+    no2_cum_per10, pm25_cum_per5
+  )
+
+# ---- 2) Single-exposure FGR helper (no tidy-eval) ----
+run_fgr_single <- function(df, cause_label, exposure_var) {
+  stopifnot(length(exposure_var) == 1L, exposure_var %in% names(df))
+  rhs <- paste(
+    "age", "sex", "race", "svi_overall", "acs_median_income_10k",
+    "acs_pct_lt_hs", "acs_unemp_rate_pct", "acs_pct_insured",
+    exposure_var, "strata(year)",
+    sep = " + "
+  )
+  form <- as.formula(
+    paste0("prodlim::Hist(ftime, event, cens.code = 'censor') ~ ", rhs)
+  )
+  riskRegression::FGR(formula = form, data = df, cause = cause_label)
+}
+
+# ---- 3) Robust tidier for FGR across versions ----
+tidy_FGR <- function(fit, outcome_label, labmap = NULL) {
+  s   <- summary(fit)
+  out <- as.data.frame(s$coef, stringsAsFactors = FALSE)
+  out$term <- rownames(out); rownames(out) <- NULL
+  
+  # column pickers (case-insensitive, tolerant)
+  pick1 <- function(cands) {
+    hits <- unlist(lapply(cands, function(p) grep(p, names(out), ignore.case = TRUE, value = TRUE)))
+    if (length(hits)) hits[1] else NA_character_
+  }
+  est_col <- pick1(c("^estimate$", "^coef$", "beta"))
+  se_col  <- pick1(c("^se", "std", "stderr"))
+  lcl_col <- pick1(c("^lcl", "lower", "lower.*95"))
+  ucl_col <- pick1(c("^ucl", "upper", "upper.*95"))
+  p_col   <- pick1(c("^p$", "p.value", "pr\\(>|z\\|\\)"))
+  
+  to_num <- function(x) suppressWarnings(as.numeric(gsub(",", "", x)))
+  
+  est <- to_num(out[[est_col]])
+  se  <- if (!is.na(se_col))  to_num(out[[se_col]]) else rep(NA_real_, length(est))
+  lcl <- if (!is.na(lcl_col)) to_num(out[[lcl_col]]) else rep(NA_real_, length(est))
+  ucl <- if (!is.na(ucl_col)) to_num(out[[ucl_col]]) else rep(NA_real_, length(est))
+  pv  <- if (!is.na(p_col))   to_num(out[[p_col]])   else rep(NA_real_, length(est))
+  
+  # build CIs from SE if needed (log scale → exponentiate below)
+  need_ci <- !is.finite(lcl) | !is.finite(ucl)
+  if (any(need_ci) && all(is.finite(se))) {
+    z <- qnorm(0.975)
+    lcl[need_ci] <- est[need_ci] - z*se[need_ci]
+    ucl[need_ci] <- est[need_ci] + z*se[need_ci]
+  }
+  
+  term_clean <- if (!is.null(labmap)) dplyr::recode(out$term, !!!labmap, .default = out$term) else out$term
+  
+  tibble(
+    outcome   = outcome_label,
+    term      = term_clean,
+    estimate  = est,
+    SHR       = exp(est),
+    conf.low  = exp(lcl),
+    conf.high = exp(ucl),
+    p.value   = pv
+  )
+}
+
+# pretty labels for exposures
+exp_labels <- c(
+  "no2_cum_per10" = "NO\u2082 (cumulative), per 10 ppb",
+  "pm25_cum_per5" = "PM\u2082.\u2085 (cumulative), per 5 \u00B5g/m\u00B3"
+)
+
+# ---- 4) Explicit fits (***FYI THESE WILL TAKE A BIT TO RUN***) ----
+# NO2 cumulative
+fit_death_no2cum <- run_fgr_single(tte_fg, "death", "no2_cum_per10")
+fit_extub_no2cum <- run_fgr_single(tte_fg, "extub", "no2_cum_per10")
+fit_prf_no2cum   <- run_fgr_single(tte_fg, "prf",   "no2_cum_per10")
+
+tab_death_no2cum <- tidy_FGR(fit_death_no2cum, "Death (cause=2)", exp_labels)
+tab_extub_no2cum <- tidy_FGR(fit_extub_no2cum, "Successful extubation (cause=1)", exp_labels)
+tab_prf_no2cum   <- tidy_FGR(fit_prf_no2cum,   "Persistent respiratory failure (cause=3)", exp_labels)
+
+# PM2.5 cumulative
+fit_death_pm25cum <- run_fgr_single(tte_fg, "death", "pm25_cum_per5")
+fit_extub_pm25cum <- run_fgr_single(tte_fg, "extub", "pm25_cum_per5")
+fit_prf_pm25cum   <- run_fgr_single(tte_fg, "prf",   "pm25_cum_per5")
+
+tab_death_pm25cum <- tidy_FGR(fit_death_pm25cum, "Death (cause=2)", exp_labels)
+tab_extub_pm25cum <- tidy_FGR(fit_extub_pm25cum, "Successful extubation (cause=1)", exp_labels)
+tab_prf_pm25cum   <- tidy_FGR(fit_prf_pm25cum,   "Persistent respiratory failure (cause=3)", exp_labels)
+
+# ---- 5) Combine & export ----
+all_tidy <- dplyr::bind_rows(
+  tab_death_no2cum, tab_extub_no2cum, tab_prf_no2cum,
+  tab_death_pm25cum, tab_extub_pm25cum, tab_prf_pm25cum
+) %>%
+  mutate(
+    exposure = term %in% unname(exp_labels),
+    CI95 = sprintf("%.3f–%.3f", conf.low, conf.high)
+  ) %>%
+  arrange(outcome, desc(exposure), term)
+
+out_root <- cfg$output_dir %||% "Results"
+out_dir  <- file.path(out_root, "finegray_shr_cumulative_only_NOLOOP")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+write_csv(all_tidy, file.path(out_dir, "shr_all_outcomes_cumulative_only_NOLOOP.csv"))
+
+if (exists("save_tbl")) {
+  save_tbl(all_tidy, file.path("finegray_shr_cumulative_only_NOLOOP", "shr_all_outcomes_cumulative_only_NOLOOP"))
+}
+
+message("Wrote: ", normalizePath(out_dir))
+
 
 
 # =========================

@@ -130,7 +130,7 @@ calculate_sofa <- function(cohort_data,
       icu_admit_time = safe_ts(icu_admit_time),
       window_end = icu_admit_time + lubridate::hours(window_hours)
     ) %>%
-    select(hospitalization_id, icu_admit_time, window_end)
+    dplyr::select(hospitalization_id, icu_admit_time, window_end)
 
   # ---- 1. VITALS (MAP, SpO2, Weight) - Pre-filtered ----
   cat("Processing vitals...\n")
@@ -265,7 +265,7 @@ calculate_sofa <- function(cohort_data,
 
   # Combine all labs
   labs_combined <- cohort_windows %>%
-    select(hospitalization_id) %>%
+    dplyr::select(hospitalization_id) %>%
     left_join(labs_creatinine, by = "hospitalization_id") %>%
     left_join(labs_bilirubin, by = "hospitalization_id") %>%
     left_join(labs_po2, by = "hospitalization_id") %>%
@@ -343,7 +343,7 @@ calculate_sofa <- function(cohort_data,
   cat("Combining all components...\n")
 
   sofa_data <- cohort_windows %>%
-    select(hospitalization_id) %>%
+    dplyr::select(hospitalization_id) %>%
     left_join(vitals_window, by = "hospitalization_id") %>%
     left_join(resp_window, by = "hospitalization_id") %>%
     left_join(labs_combined, by = "hospitalization_id") %>%
@@ -441,7 +441,7 @@ calculate_sofa <- function(cohort_data,
 
   # Return scores with key variables
   sofa_scores %>%
-    select(
+    dplyr::select(
       hospitalization_id,
       # Component scores
       sofa_cv, sofa_coag, sofa_liver, sofa_renal, sofa_resp, sofa_cns,

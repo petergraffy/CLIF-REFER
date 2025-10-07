@@ -13,7 +13,8 @@ pkgs <- c(
   "rlang","data.table","readr","glue","scales",
   "DiagrammeR","DiagrammeRsvg","rsvg", "tidycensus", "fixest", 
   "marginaleffects", "pscl", "glmmTMB", "digest", "pROC", 
-  "tibble", "forcats", "grid", 'jsonlite', 'cmprsk'
+  "tibble", "forcats", "grid", 'jsonlite', 'cmprsk', 'data.table', 
+  'riskRegression', 'survival', 'mstate', 'prodlim'
 )
 pkgs <- unique(pkgs)
 
@@ -22,3 +23,8 @@ renv::install(pkgs)
 renv::settings$snapshot.type("all")
 renv::snapshot(prompt = FALSE) # Then run snapshot again
 
+library(data.table)
+library(riskRegression)
+library(survival)
+library(mstate)
+library(prodlim)

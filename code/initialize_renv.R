@@ -22,9 +22,3 @@ pkgs <- unique(pkgs)
 renv::install(pkgs)
 renv::settings$snapshot.type("all")
 renv::snapshot(prompt = FALSE) # Then run snapshot again
-
-library(data.table)
-library(riskRegression)
-library(survival)
-library(mstate)
-library(prodlim)

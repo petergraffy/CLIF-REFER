@@ -55,16 +55,16 @@ raw_all <- purrr::map_dfr(files, read_one)
 
 # ---- De-duplicate within a file/year/county if necessary (sum) ----
 by_year <- raw_all |>
-  group_by(fips, year) |>
-  summarize(arf_count = sum(arf_count, na.rm = TRUE), .groups = "drop")
+  dplyr::group_by(fips, year) |>
+  dplyr::summarize(arf_count = sum(arf_count, na.rm = TRUE), .groups = "drop")
 
 # Write per-year combined table
 readr::write_csv(by_year, file.path(dir_out, "combined_arf_counts_by_county_year.csv"))
 
 # ---- Aggregate across the entire study period ----
 by_total <- by_year |>
-  group_by(fips) |>
-  summarize(arf_total = sum(arf_count, na.rm = TRUE), .groups = "drop")
+  dplyr::group_by(fips) |>
+  dplyr::summarize(arf_total = sum(arf_count, na.rm = TRUE), .groups = "drop")
 
 # Write total counts table
 readr::write_csv(by_total, file.path(dir_out, "arf_counts_by_county_total.csv"))
@@ -116,28 +116,36 @@ map_ll <- map_ll %>%
 
 pal <- c("#e6e6e6", viridis(length(pos_labels)))
 
-p <- ggplot(map_ll) +
+p_arf <- ggplot(map_ll) +
   geom_sf(aes(fill = arf_cat), color = "white", linewidth = 0.05) +
   scale_fill_manual(
-    name = "ARF counts (total)",
+    name = "Number of Cases",
     values = pal,
     drop = FALSE,
-    na.value = "#bdbdbd"
+    na.translate = FALSE,
+    guide = guide_legend(reverse = TRUE)
   ) +
   coord_sf(
     xlim = c(-125, -66.5), ylim = c(24, 49), expand = FALSE
   ) +
+  labs(
+    title = "Total Acute Respiratory Failure Cases by U.S. County",
+    subtitle = "Aggregated across all sites for the full study period (2018-2024)"
+  ) +
   theme_void(base_size = 12) +
   theme(
+    plot.title    = element_text(size = 20, face = "bold", hjust = 0),
+    plot.subtitle = element_text(size = 14, hjust = 0, margin = margin(t = 4, b = 8)),
     legend.position = "right",
-    legend.title = element_text(size = 12, face = "bold"),
-    legend.text  = element_text(size = 10),
-    plot.margin = margin(5, 5, 5, 5)
+    legend.title = element_text(size = 18, face = "bold"),
+    legend.text  = element_text(size = 12),
+    plot.margin = margin(8, 8, 8, 8)
   )
+p_arf
 
 ggsave(
   filename = file.path(dir_out, "arf_counts_total_by_county_map_gg.png"),
-  plot = p, width = 14, height = 9, dpi = 300
+  plot = p_arf, width = 14, height = 9, dpi = 300
 )
 
 sum(by_total$arf_total)
@@ -1181,7 +1189,7 @@ plot_cif_all_sites <- function(df, pol,
   if (!nrow(dd)) stop(glue("No rows for pollutant = {pol}."))
   
   if (is.null(y_max)) {
-    y_max <- dd %>% summarize(mx = max(cif, na.rm = TRUE)) %>% pull(mx)
+    y_max <- dd %>% dplyr::summarize(mx = max(cif, na.rm = TRUE)) %>% pull(mx)
     y_max <- ifelse(is.finite(y_max), ceiling(y_max*20)/20, 0.2)
   }
   
@@ -1214,7 +1222,7 @@ ggsave(file.path(out_dir, "CIF_all_sites_PM25.png"), p_pm25, width = 14, height 
 # risk-set–weighted mean CIF at each day, by pollutant × exposure_bin × outcome
 pooled_cif <- cif_all %>%
   group_by(pollutant, cause_label, exposure_bin, day) %>%
-  summarize(
+  dplyr::summarize(
     n_sites    = n_distinct(site_name),
     total_at_risk = sum(risk_set, na.rm = TRUE),
     cif        = weighted.mean(cif, w = pmax(risk_set, 0), na.rm = TRUE),
@@ -1235,7 +1243,7 @@ plot_outcome_combined <- function(df, outcome, y_max = NULL) {
   dd <- df %>% filter(cause_label == outcome)
   
   if (is.null(y_max)) {
-    y_max <- dd %>% summarize(mx = max(cif, na.rm = TRUE)) %>% pull(mx)
+    y_max <- dd %>% dplyr::summarize(mx = max(cif, na.rm = TRUE)) %>% pull(mx)
     y_max <- ifelse(is.finite(y_max), ceiling(y_max*20)/20, 0.2)
   }
   
@@ -2022,7 +2030,7 @@ cif_median <- cif_all %>%
 # Risk-set–weighted pooling by median bins
 pooled_med <- cif_median %>%
   group_by(pollutant, cause_label, exposure_bin_us_med, day) %>%
-  summarize(
+  dplyr::summarize(
     n_sites        = n_distinct(site_name),
     total_at_risk  = sum(risk_set, na.rm = TRUE),
     cif            = weighted.mean(cif, w = pmax(risk_set, 0), na.rm = TRUE),
@@ -2068,7 +2076,7 @@ plot_median_bins <- function(df_sm, df_raw, pol, outcome, day_max = 30, y_max = 
   labs_vec <- lab_strings_median(pol)
   
   if (is.null(y_max)) {
-    y_max <- dd %>% summarize(mx = max(ci_smooth, na.rm = TRUE)) %>% pull(mx)
+    y_max <- dd %>% dplyr::summarize(mx = max(ci_smooth, na.rm = TRUE)) %>% pull(mx)
     y_max <- ifelse(is.finite(y_max), ceiling(y_max*20)/20, 0.2)
   }
   
@@ -2256,7 +2264,7 @@ cif_q4 <- cif_all %>%
 
 pooled_q4 <- cif_q4 %>%
   group_by(pollutant, cause_label, exposure_bin_us_q4, day) %>%
-  summarize(
+  dplyr::summarize(
     n_sites        = n_distinct(site_name),
     total_at_risk  = sum(risk_set, na.rm = TRUE),
     cif            = weighted.mean(cif, w = pmax(risk_set, 0), na.rm = TRUE),
@@ -2310,7 +2318,7 @@ plot_quartiles <- function(df_sm, df_raw, pol, outcome, day_max = 30, y_max = NU
   labs_vec <- legend_labels_quartiles(pol)
   
   if (is.null(y_max)) {
-    y_max <- dd %>% summarize(mx = max(ci_smooth, na.rm = TRUE)) %>% pull(mx)
+    y_max <- dd %>% dplyr::summarize(mx = max(ci_smooth, na.rm = TRUE)) %>% pull(mx)
     y_max <- ifelse(is.finite(y_max), ceiling(y_max*20)/20, 0.2)
   }
   
@@ -3211,43 +3219,52 @@ p_no2
  # -------------------------
  clean_sex <- function(x) {
    x_chr <- as.character(x)
-   x_chr <- str_trim(x_chr)
-   x_chr <- str_to_lower(x_chr)
+   x_chr <- stringr::str_trim(x_chr)
+   x_chr <- stringr::str_to_lower(x_chr)
    
    dplyr::case_when(
      x_chr %in% c("m", "male") ~ "Male",
      x_chr %in% c("f", "female") ~ "Female",
      x_chr %in% c("unknown", "unk", "u", "na", "n/a", "", "missing") ~ "Unknown",
-     is.na(x_chr) ~ "Unknown",
-     TRUE ~ str_to_title(x_chr)
+     is.na(x) ~ "Unknown",
+     TRUE ~ stringr::str_to_title(x_chr)
    )
  }
  
  clean_race <- function(x) {
    x_chr <- as.character(x)
-   x_chr <- str_trim(x_chr)
-   x_chr <- str_replace_all(x_chr, "\\s+", " ")
-   x_chr <- str_replace_all(x_chr, regex("^non[- ]?hispanic", ignore_case = TRUE), "Non-Hispanic")
-   x_chr <- str_replace_all(x_chr, regex("^hispanic", ignore_case = TRUE), "Hispanic")
-   str_to_title(x_chr)
+   x_chr <- stringr::str_trim(x_chr)
+   x_chr <- stringr::str_replace_all(x_chr, "\\s+", " ")
+   x_chr <- stringr::str_replace_all(
+     x_chr,
+     stringr::regex("^non[- ]?hispanic", ignore_case = TRUE),
+     "Non-Hispanic"
+   )
+   x_chr <- stringr::str_replace_all(
+     x_chr,
+     stringr::regex("^hispanic", ignore_case = TRUE),
+     "Hispanic"
+   )
+   stringr::str_to_title(x_chr)
  }
  
  # -------------------------
  # Pool/plot helpers
  # -------------------------
- prep_ribbon_df <- function(df, group_var, group_clean_fn = NULL, levels = NULL) {
+ prep_ribbon_df <- function(df, group_var, group_clean_fn = NULL, levels = NULL,
+                            drop_levels = NULL) {
    group_var <- rlang::ensym(group_var)
    group_nm  <- rlang::as_name(group_var)
    
    out <- df %>%
-     mutate(
+     dplyr::mutate(
        no2_10 = as.numeric(.data$no2_10),
        pred   = as.numeric(.data$pred),
        lo     = as.numeric(.data$lo),
        hi     = as.numeric(.data$hi)
      ) %>%
-     filter(is.finite(no2_10), is.finite(pred), is.finite(lo), is.finite(hi)) %>%
-     mutate(
+     dplyr::filter(is.finite(no2_10), is.finite(pred), is.finite(lo), is.finite(hi)) %>%
+     dplyr::mutate(
        lo = pmin(lo, hi),
        hi = pmax(lo, hi),
        pred = pmax(lo, pmin(pred, hi))
@@ -3257,16 +3274,21 @@ p_no2
      out[[group_nm]] <- group_clean_fn(out[[group_nm]])
    }
    
+   # DROP unwanted categories (e.g., Unknown for sex)
+   if (!is.null(drop_levels)) {
+     out <- out %>% dplyr::filter(!(.data[[group_nm]] %in% drop_levels))
+   }
+   
    # critical: one row per group × x for clean ribbons
    out <- out %>%
-     group_by(.data[[group_nm]], no2_10) %>%
-     summarise(
+     dplyr::group_by(.data[[group_nm]], no2_10) %>%
+     dplyr::summarise(
        pred = mean(pred, na.rm = TRUE),
        lo   = mean(lo,   na.rm = TRUE),
        hi   = mean(hi,   na.rm = TRUE),
        .groups = "drop"
      ) %>%
-     arrange(.data[[group_nm]], no2_10)
+     dplyr::arrange(.data[[group_nm]], no2_10)
    
    if (!is.null(levels)) {
      out[[group_nm]] <- factor(out[[group_nm]], levels = levels)
@@ -3277,16 +3299,28 @@ p_no2
  
  library(RColorBrewer)
  # Brewer palettes
- pal_sex  <- brewer.pal(3, "Set3")   # Female, Male, Unknown
+ pal_sex  <- brewer.pal(3, "Set2")   # we'll only use first 2 after dropping Unknown
  pal_race <- brewer.pal(8, "Set1")   # up to 8 race categories
  
  plot_ribbon_pub <- function(df, group_var, title_expr, ylab, palette = NULL) {
    group_var <- rlang::ensym(group_var)
    group_nm  <- rlang::as_name(group_var)
    
-   p <- ggplot(
+   # If palette is named or longer than needed, align it to factor levels
+   if (!is.null(palette)) {
+     levs <- levels(df[[group_nm]])
+     if (is.null(levs)) levs <- sort(unique(df[[group_nm]]))
+     if (is.null(names(palette))) {
+       palette_use <- palette[seq_len(min(length(palette), length(levs)))]
+       names(palette_use) <- levs[seq_len(length(palette_use))]
+     } else {
+       palette_use <- palette[levs]
+     }
+   }
+   
+   p <- ggplot2::ggplot(
      df,
-     aes(
+     ggplot2::aes(
        x = no2_10,
        y = pred,
        color = !!group_var,
@@ -3294,27 +3328,26 @@ p_no2
        group = !!group_var
      )
    ) +
-     geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.07, color = NA) +
-     geom_line(linewidth = 1.15) +
-     labs(
+     ggplot2::geom_ribbon(ggplot2::aes(ymin = lo, ymax = hi), alpha = 0.07, color = NA) +
+     ggplot2::geom_line(linewidth = 1.15) +
+     ggplot2::labs(
        title = title_expr,
        x     = expression(NO[2] * " (per 10 ppb)"),
        y     = ylab,
        color = NULL,
        fill  = NULL
      ) +
-     theme_classic(base_size = 13) +
-     theme(
-       plot.title   = element_text(face = "bold"),
-       axis.title   = element_text(face = "bold"),
+     ggplot2::theme_classic(base_size = 16) +
+     ggplot2::theme(
+       plot.title   = ggplot2::element_text(face = "bold"),
+       axis.title   = ggplot2::element_text(face = "bold"),
        legend.position = "right"
      )
    
-   # Apply palette if supplied
    if (!is.null(palette)) {
      p <- p +
-       scale_color_manual(values = palette) +
-       scale_fill_manual(values = palette)
+       ggplot2::scale_color_manual(values = palette_use, drop = TRUE) +
+       ggplot2::scale_fill_manual(values  = palette_use, drop = TRUE)
    }
    
    p
@@ -3332,11 +3365,10 @@ p_no2
    "vent",       "vent",    "Predicted mean ventilation hours", "log",   "Ventilation hours vs "
  )
  
- # If your race column differs by outcome, change here:
  group_specs <- tibble::tribble(
-   ~group_key, ~group_var,               ~clean_fn,   ~levels,
-   "sex",      "sex_category",           clean_sex,   list(c("Female", "Male", "Unknown")),
-   "race",     "race_ethnicity_simple",  clean_race,  list(NULL)
+   ~group_key, ~group_var,               ~clean_fn,   ~levels,                     ~drop_levels,
+   "sex",      "sex_category",           clean_sex,   list(c("Female", "Male")),   list(c("Unknown")),
+   "race",     "race_ethnicity_simple",  clean_race,  list(NULL),                  list(NULL)
  )
  
  # -------------------------
@@ -3349,6 +3381,7 @@ p_no2
    g_var    <- group_specs$group_var[g]
    g_clean  <- group_specs$clean_fn[[g]]
    g_levels <- group_specs$levels[[g]][[1]]
+   g_drop   <- group_specs$drop_levels[[g]][[1]]
    
    for (o in seq_len(nrow(outcomes))) {
      o_key  <- outcomes$outcome_key[o]
@@ -3364,7 +3397,8 @@ p_no2
      )
      
      if (length(files) == 0) {
-       message("No files found for ", g_key, " x ", o_key, " (pattern: site_preds_", f_key, "_by_", g_key, "...)")
+       message("No files found for ", g_key, " x ", o_key,
+               " (pattern: site_preds_", f_key, "_by_", g_key, "...)")
        next
      }
      
@@ -3377,13 +3411,13 @@ p_no2
      
      pooled <- prep_ribbon_df(
        pooled_raw,
-       group_var = !!sym(g_var),
+       group_var = !!rlang::sym(g_var),
        group_clean_fn = g_clean,
-       levels = g_levels
+       levels = g_levels,
+       drop_levels = g_drop
      )
      
      title_expr <- if (g_key == "sex") {
-       # e.g., "30-day mortality vs NO2 by sex"
        as.expression(bquote(.(t_stub) * NO[2] * " by sex"))
      } else {
        as.expression(bquote(.(t_stub) * NO[2] * " by race/ethnicity"))
@@ -3391,7 +3425,7 @@ p_no2
      
      p <- plot_ribbon_pub(
        pooled,
-       group_var = !!sym(g_var),
+       group_var = !!rlang::sym(g_var),
        title_expr = title_expr,
        ylab = ylab,
        palette = if (g_key == "sex") pal_sex else pal_race
@@ -3400,13 +3434,9 @@ p_no2
      plot_name <- paste0(g_key, "_", o_key)
      plots[[plot_name]] <- p
      
-     print(p)  # draws each plot as you go
+     print(p)
    }
  }
- 
- # At the end, you can access individual plots like:
- # plots[["sex_30d"]], plots[["race_vent"]], etc.
- 
  
  # -------------------------
  # Save figures (high-res)
@@ -3414,7 +3444,6 @@ p_no2
  output_dir <- file.path(subtype_dir, "output")
  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
  
- # Recommended journal dimensions
  png_w <- 7.5   # inches
  png_h <- 5.0
  dpi   <- 600
@@ -3422,7 +3451,6 @@ p_no2
  for (nm in names(plots)) {
    p <- plots[[nm]]
    
-   # PNG (review-friendly)
    ggsave(
      filename = file.path(output_dir, paste0(nm, ".png")),
      plot     = p,
@@ -3433,7 +3461,6 @@ p_no2
      bg       = "white"
    )
    
-   # PDF (final production)
    ggsave(
      filename = file.path(output_dir, paste0(nm, ".pdf")),
      plot     = p,
@@ -3443,6 +3470,7 @@ p_no2
      device   = cairo_pdf
    )
  }
+ 
  
  
 ####### subtype pooled 
@@ -3964,10 +3992,1288 @@ p_no2
 ###### facet wrapped 
  
  
+ subtype_dir <- "/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARFVI/sites/analysis/subtype"
+ out_dir <- file.path(subtype_dir, "output")
+ dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
  
+ # --- helpers ---
+ site_from_file <- function(f) {
+   # if your site_id is in the file itself you can ignore this.
+   # otherwise, derive from filename prefix like "refer_Emory_..."
+   bn <- basename(f)
+   str_match(bn, "^refer_([^_]+)_")[,2] %||% "UnknownSite"
+ }
  
+ calc_se_from_ci <- function(lo, hi) (log(hi) - log(lo)) / (2 * 1.96)
  
+ # Correct subtype-specific NO2 effects from a tidy model table (OR/IRR scale)
+ compute_site_subtype_effects <- function(df, file) {
+   
+   site_id <- site_from_file(file)
+   
+   # main NO2 effect (ratio scale)
+   no2_row <- df %>% filter(term == "no2_10") %>% slice(1)
+   if (nrow(no2_row) == 0) return(NULL)
+   
+   beta_no2 <- log(no2_row$estimate)
+   se_no2   <- calc_se_from_ci(no2_row$conf.low, no2_row$conf.high)
+   
+   inter <- df %>%
+     filter(str_detect(term, "^no2_10:arf_subtype")) %>%
+     mutate(
+       arf_subtype = str_replace(term, "^no2_10:arf_subtype", ""),
+       arf_subtype = str_to_title(arf_subtype),
+       beta_int    = log(estimate),
+       se_int      = calc_se_from_ci(conf.low, conf.high)
+     )
+   
+   out <- tibble(
+     site_id = site_id,
+     arf_subtype = "Hypoxemic",
+     beta = beta_no2,
+     se   = se_no2
+   )
+   
+   if (nrow(inter) > 0) {
+     out <- bind_rows(
+       out,
+       inter %>%
+         transmute(
+           site_id,
+           arf_subtype,
+           beta = beta_no2 + beta_int,
+           se   = sqrt(se_no2^2 + se_int^2)   # assumes 0 covariance
+         )
+     )
+   }
+   
+   out
+ }
+ 
+ # Fixed-effect pooling on log scale
+ pool_log_effects <- function(dat) {
+   dat <- dat %>% filter(is.finite(beta), is.finite(se), se > 0)
+   
+   if (nrow(dat) == 0) return(tibble(est = NA_real_, lo = NA_real_, hi = NA_real_, k = 0L))
+   
+   w <- 1 / (dat$se^2)
+   beta_hat <- sum(w * dat$beta) / sum(w)
+   se_hat   <- sqrt(1 / sum(w))
+   
+   tibble(
+     est = exp(beta_hat),
+     lo  = exp(beta_hat - 1.96 * se_hat),
+     hi  = exp(beta_hat + 1.96 * se_hat),
+     k   = nrow(dat)
+   )
+ }
+ 
+ # --- read + compute pooled effects for one outcome file pattern ---
+ pool_one_outcome <- function(pattern, outcome_label) {
+   
+   files <- list.files(subtype_dir, pattern = pattern, full.names = TRUE)
+   files <- files[str_detect(basename(files), "x_subtype")]  # safety
+   
+   if (length(files) == 0) return(NULL)
+   
+   per_site <- map_dfr(files, \(f) {
+     df <- suppressMessages(read_csv(f, show_col_types = FALSE))
+     compute_site_subtype_effects(df, f)
+   })
+   
+   pooled <- per_site %>%
+     mutate(
+       arf_subtype = factor(arf_subtype, levels = c("Hypoxemic", "Hypercapnic", "Mixed"))
+     ) %>%
+     group_by(arf_subtype) %>%
+     group_modify(~ pool_log_effects(.x)) %>%
+     ungroup() %>%
+     mutate(outcome = outcome_label)
+   
+   pooled
+ }
+ 
+ # --- run pooling for all 3 outcomes (ONLY x_subtype files) ---
+ pooled_all <- bind_rows(
+   pool_one_outcome("model_tidy_death30d.*x_subtype.*\\.csv$",   "30-day mortality (OR)"),
+   pool_one_outcome("model_tidy_inhosp_death.*x_subtype.*\\.csv$", "In-hospital mortality (OR)"),
+   pool_one_outcome("model_tidy_vent_hours.*x_subtype.*\\.csv$", "Ventilation hours (IRR)")
+ ) %>%
+   filter(!is.na(est)) %>%
+   mutate(
+     outcome = factor(outcome, levels = c("30-day mortality (OR)",
+                                          "In-hospital mortality (OR)",
+                                          "Ventilation hours (IRR)"))
+   )
+ 
+ # --- publication-ready faceted forest plot ---
+ p <- ggplot(pooled_all, aes(x = est, y = 1)) +
+   geom_vline(xintercept = 1, linetype = 3, linewidth = 0.5) +
+   geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0, linewidth = 0.8) +
+   geom_point(size = 2.6) +
+   scale_x_log10() +
+   facet_grid(outcome ~ arf_subtype, scales = "free_x") +
+   labs(
+     title = expression("Pooled NO"[2]*" effect per 10 ppb by ARF subtype"),
+     x = expression("Effect estimate per 10 ppb NO"[2]*" (log scale)"),
+     y = NULL
+   ) +
+   theme_classic(base_size = 13) +
+   theme(
+     strip.background = element_blank(),
+     strip.text = element_text(face = "bold"),
+     axis.text.y = element_blank(),
+     axis.ticks.y = element_blank(),
+     plot.title = element_text(face = "bold", size = 16),
+     panel.spacing = unit(1.0, "lines")
+   )
+ 
+ ggsave(
+   filename = file.path(out_dir, "pooled_no2_effect_by_subtype_all_outcomes_facet.png"),
+   plot = p,
+   width = 11.5, height = 7.0, dpi = 600
+ )
+ 
+ ggsave(
+   filename = file.path(out_dir, "pooled_no2_effect_by_subtype_all_outcomes_facet.pdf"),
+   plot = p,
+   width = 11.5, height = 7.0
+ )
+ 
+ p
+
+
 
  
+ # Ensure clean ordering
+ pooled_plot <- pooled_all %>%
+   mutate(
+     arf_subtype = factor(arf_subtype, levels = c("Hypoxemic", "Hypercapnic", "Mixed")),
+     outcome = factor(outcome, levels = c(
+       "30-day mortality (OR)",
+       "In-hospital mortality (OR)",
+       "Ventilation hours (IRR)"
+     ))
+   )
+ 
+ # Global x limits (common axis across all panels)
+ x_min <- min(pooled_plot$lo, na.rm = TRUE)
+ x_max <- max(pooled_plot$hi, na.rm = TRUE)
+ 
+ p2 <- ggplot(pooled_plot, aes(x = est, y = outcome, color = outcome)) +
+   geom_vline(xintercept = 1, linetype = 3, linewidth = 0.5, color = "grey30") +
+   geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0, linewidth = 0.9) +
+   geom_point(size = 2.6) +
+   facet_wrap(~ arf_subtype, nrow = 1) +
+   scale_x_log10(limits = c(x_min, x_max)) +
+   labs(
+     title = expression("Pooled NO"[2]*" effect per 10 ppb by ARF subtype"),
+     x = expression("Effect estimate per 10 ppb NO"[2]*" (log scale)"),
+     y = NULL,
+     color = "Outcome"
+   ) +
+   theme_classic(base_size = 13) +
+   theme(
+     plot.title = element_text(face = "bold", size = 15),
+     strip.background = element_blank(),
+     strip.text = element_text(face = "bold"),
+     legend.position = "bottom",
+     legend.title = element_text(face = "bold"),
+     panel.spacing = unit(1.0, "lines")
+   )
+ 
+ # Save high-res
+ out_dir <- file.path("/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARFVI/sites/analysis/subtype", "output")
+ dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+ 
+ ggsave(
+   filename = file.path(out_dir, "pooled_no2_effect_by_subtype_all_outcomes_color_commonx.png"),
+   plot = p2,
+   width = 10.5, height = 4.2, dpi = 600
+ )
+ 
+ ggsave(
+   filename = file.path(out_dir, "pooled_no2_effect_by_subtype_all_outcomes_color_commonx.pdf"),
+   plot = p2,
+   width = 10.5, height = 4.2
+ )
+ 
+ p2
+ 
+ 
+ # pooled_all must contain: outcome, arf_subtype, est, lo, hi
+ # outcome should already be labeled like:
+ # "30-day mortality (OR)", "In-hospital mortality (OR)", "Ventilation hours (IRR)"
+ plot_dat <- pooled_all %>%
+   mutate(
+     arf_subtype = as.character(arf_subtype),
+     arf_subtype = case_when(
+       str_detect(str_to_lower(arf_subtype), "hypox") ~ "Hypoxemic",
+       str_detect(str_to_lower(arf_subtype), "hypercap") ~ "Hypercapnic",
+       str_detect(str_to_lower(arf_subtype), "mixed") ~ "Mixed",
+       TRUE ~ str_to_title(arf_subtype)
+     ),
+     arf_subtype = factor(arf_subtype, levels = c("Hypoxemic", "Hypercapnic", "Mixed")),
+     outcome = factor(outcome, levels = c(
+       "30-day mortality (OR)",
+       "In-hospital mortality (OR)",
+       "Ventilation hours (IRR)"
+     ))
+   )
+ 
+ # Common x-limits across everything
+ x_min <- min(plot_dat$lo, na.rm = TRUE)
+ x_max <- max(plot_dat$hi, na.rm = TRUE)
+ 
+ pd <- position_dodge(width = 0.55)
+ 
+ p <- ggplot(plot_dat, aes(x = est, y = outcome, color = arf_subtype)) +
+   geom_vline(xintercept = 1, linetype = 3, linewidth = 0.5, color = "grey35") +
+   geom_errorbarh(aes(xmin = lo, xmax = hi), position = pd, height = 0, linewidth = 0.95) +
+   geom_point(position = pd, size = 2.8) +
+   scale_x_log10(limits = c(x_min, x_max)) +
+   labs(
+     title = expression("Pooled NO"[2]*" effect per 10 ppb by outcome and ARF subtype"),
+     x = expression("Effect estimate per 10 ppb NO"[2]*" (log scale)"),
+     y = NULL,
+     color = "ARF subtype"
+   ) +
+   theme_classic(base_size = 13) +
+   theme(
+     plot.title = element_text(face = "bold", size = 15),
+     legend.position = "bottom",
+     legend.title = element_text(face = "bold"),
+     axis.title.x = element_text(face = "bold"),
+     axis.text.y = element_text(face = "bold"),
+     panel.grid.major.y = element_line(color = "grey92", linewidth = 0.35),
+     panel.grid.minor = element_blank()
+   )
+ 
+ # Save high-res
+ out_dir <- file.path(
+   "/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARFVI/sites/analysis/subtype",
+   "output"
+ )
+ dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+ 
+ ggsave(
+   filename = file.path(out_dir, "pooled_no2_effect_all_outcomes_grouped_by_outcome_color_subtype.png"),
+   plot = p,
+   width = 9.2, height = 4.6, dpi = 600
+ )
+ 
+ ggsave(
+   filename = file.path(out_dir, "pooled_no2_effect_all_outcomes_grouped_by_outcome_color_subtype.pdf"),
+   plot = p,
+   width = 9.2, height = 4.6
+ )
+ 
+ p
 
+ 
+ library(cowplot)
+ out_dir <- "/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARFVI/sites/analysis/subtype/output"
+ 
+ race_30d_png    <- file.path(out_dir, "race_30d.png")
+ race_inhosp_png <- file.path(out_dir, "race_inhosp.png")
+ race_vent_png   <- file.path(out_dir, "race_vent.png")
+ 
+ sex_30d_png     <- file.path(out_dir, "sex_30d.png")
+ sex_inhosp_png  <- file.path(out_dir, "sex_inhosp.png")
+ sex_vent_png    <- file.path(out_dir, "sex_vent.png")
+ 
+ # ---- READ PNGs AS GROBS ----
+ g_race_30d    <- ggdraw() + draw_image(race_30d_png,    scale = 1)
+ g_race_inhosp <- ggdraw() + draw_image(race_inhosp_png, scale = 1)
+ g_race_vent   <- ggdraw() + draw_image(race_vent_png,   scale = 1)
+ 
+ g_sex_30d     <- ggdraw() + draw_image(sex_30d_png,     scale = 1)
+ g_sex_inhosp  <- ggdraw() + draw_image(sex_inhosp_png,  scale = 1)
+ g_sex_vent    <- ggdraw() + draw_image(sex_vent_png,    scale = 1)
+ 
+ # ---- BUILD GRID (Race column | Sex column) ----
+ panel <- plot_grid(
+   g_race_30d,    g_sex_30d,
+   g_race_inhosp, g_sex_inhosp,
+   g_race_vent,   g_sex_vent,
+   ncol = 2,
+   align = "hv",
+   axis = "tblr",
+   rel_widths = c(1, 1),
+   rel_heights = c(1, 1, 1),
+   labels = c("A", "B", "C", "D", "E", "F"),
+   label_fontface = "bold",
+   label_size = 16,
+   label_x = 0.02,
+   label_y = 0.98,
+   hjust = 0,
+   vjust = 1
+ )
+ 
+ # Optional: add column headers
+ panel2 <- ggdraw(panel) +
+   draw_label("Race/ethnicity", x = 0.25, y = 0.995, hjust = 0.5, vjust = 1,
+              fontface = "bold", size = 14) +
+   draw_label("Sex",            x = 0.75, y = 0.995, hjust = 0.5, vjust = 1,
+              fontface = "bold", size = 14)
+ 
+ # ---- SAVE HIGH-RES ----
+ ggsave(
+   filename = file.path(out_dir, "Figure_pooled_curves_race_vs_sex_A-F.png"),
+   plot = panel2,
+   width = 12.5, height = 14, dpi = 600, bg = "white"
+ )
+ 
+ ggsave(
+   filename = file.path(out_dir, "Figure_pooled_curves_race_vs_sex_A-F.pdf"),
+   plot = panel2,
+   width = 12.5, height = 14, useDingbats = FALSE
+ )
+ 
+ panel2
+
+ ###### covid sensitivity analysis
+ 
+ 
+ subtype_dir <- "/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARFVI/sites/analysis/subtype"
+ 
+ # Output folder
+ out_dir <- file.path(subtype_dir, "output", "covid_sensitivity")
+ dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+ 
+ # -------------------------
+ # 1) Find ONLY the covid-adjusted tidy model files
+ # -------------------------
+ covid_files <- list.files(
+   subtype_dir,
+   pattern = "_adj_plus_covid_.*\\.csv$",
+   full.names = TRUE
+ )
+ 
+ if (length(covid_files) == 0) stop("No *_adj_plus_covid_*.csv files found in subtype_dir.")
+ 
+ # Keep only the outcomes you care about (include ICU LOS here)
+ # NOTE: adjust patterns to match your filenames if needed
+ outcome_map <- tibble::tribble(
+   ~pattern,        ~outcome_key,   ~outcome_label,                 ~measure_label,
+   "death30d",      "death30d",     "30-day mortality",             "OR",
+   "inhosp_death",  "inhosp_death", "In-hospital mortality",        "OR",
+   "vent_hours",    "vent_hours",   "Ventilation hours",            "IRR",
+   "icu_los",       "icu_los",      "ICU length of stay",           "IRR"
+ )
+ 
+ tag_outcome <- function(path) {
+   fn <- basename(path)
+   hit <- outcome_map %>% filter(str_detect(fn, fixed(pattern)))
+   if (nrow(hit) == 0) return(NULL)
+   hit[1,] %>% mutate(file = path)
+ }
+ 
+ files_tagged <- covid_files %>%
+   map(tag_outcome) %>%
+   compact() %>%
+   bind_rows()
+ 
+ if (nrow(files_tagged) == 0) {
+   stop("Found *_adj_plus_covid_* files, but none matched outcome patterns in outcome_map.")
+ }
+ 
+ # Attempt to infer site name from filename (edit if your naming differs)
+ infer_site <- function(fn) {
+   # e.g., refer_Emory_20251008_... => "Emory"
+   x <- str_match(fn, "^refer_([^_]+)_")[,2]
+   ifelse(is.na(x), "UnknownSite", x)
+ }
+ 
+ files_tagged <- files_tagged %>%
+   mutate(
+     filename = basename(file),
+     site = infer_site(filename)
+   )
+ 
+ # -------------------------
+ # 2) Read each CSV and extract NO2 term row (no2_10)
+ # -------------------------
+ read_tidy <- function(path) {
+   # robust read for tab or comma
+   dat <- suppressWarnings(readr::read_csv(path, show_col_types = FALSE))
+   if (!("term" %in% names(dat))) {
+     dat <- suppressWarnings(readr::read_tsv(path, show_col_types = FALSE))
+   }
+   dat
+ }
+ 
+ extract_no2 <- function(path) {
+   dat <- read_tidy(path)
+   
+   # standardize column names (in case of capitalization differences)
+   names(dat) <- tolower(names(dat))
+   
+   needed <- c("term", "estimate", "conf.low", "conf.high")
+   if (!all(needed %in% names(dat))) {
+     stop(glue("Missing required columns in {basename(path)}. Need: {paste(needed, collapse=', ')}"))
+   }
+   
+   row <- dat %>%
+     filter(term == "no2_10") %>%
+     slice(1)
+   
+   if (nrow(row) == 0) return(NULL)
+   
+   row %>%
+     transmute(
+       estimate   = as.numeric(estimate),
+       conf_low   = as.numeric(conf.low),
+       conf_high  = as.numeric(conf.high)
+     )
+ }
+ 
+ no2_site_effects <- files_tagged %>%
+   mutate(no2 = map(file, extract_no2)) %>%
+   filter(!map_lgl(no2, is.null)) %>%
+   unnest(no2)
+ 
+ if (nrow(no2_site_effects) == 0) {
+   stop("No files contained a 'no2_10' term row. Confirm term naming in the tidy outputs.")
+ }
+ 
+ # -------------------------
+ # 3) Meta-analysis prep:
+ # pool on log scale (log(OR) or log(IRR))
+ # derive SE from CI if needed
+ # -------------------------
+ no2_site_effects <- no2_site_effects %>%
+   mutate(
+     yi = log(estimate),
+     sei = (log(conf_high) - log(conf_low)) / (2 * 1.96)
+   ) %>%
+   filter(is.finite(yi), is.finite(sei), sei > 0)
+ 
+ # -------------------------
+ # 4) Random-effects pooling per outcome
+ # -------------------------
+ pool_one_outcome <- function(df) {
+   # REML random-effects meta-analysis
+   fit <- metafor::rma(yi = yi, sei = sei, method = "REML", data = df)
+   
+   tibble(
+     k = nrow(df),
+     pooled_log = as.numeric(fit$b[1]),
+     pooled_se  = as.numeric(fit$se[1]),
+     pooled_ci_lo_log = as.numeric(fit$ci.lb),
+     pooled_ci_hi_log = as.numeric(fit$ci.ub),
+     tau2 = as.numeric(fit$tau2),
+     i2   = as.numeric(fit$I2),
+     pval = as.numeric(fit$pval)
+   )
+ }
+ 
+ pooled <- no2_site_effects %>%
+   group_by(outcome_key, outcome_label, measure_label) %>%
+   group_modify(~ pool_one_outcome(.x)) %>%
+   ungroup() %>%
+   mutate(
+     pooled_est = exp(pooled_log),
+     pooled_lo  = exp(pooled_ci_lo_log),
+     pooled_hi  = exp(pooled_ci_hi_log)
+   )
+ 
+ # Save pooled table
+ readr::write_csv(pooled, file.path(out_dir, "pooled_no2_adj_plus_covid_summary.csv"))
+ 
+ # Also create a long table that includes site-specific + pooled rows (handy for plotting)
+ plot_dat <- no2_site_effects %>%
+   transmute(
+     outcome_key, outcome_label, measure_label,
+     site,
+     est = estimate, lo = conf_low, hi = conf_high,
+     type = "Site"
+   ) %>%
+   bind_rows(
+     pooled %>%
+       transmute(
+         outcome_key, outcome_label, measure_label,
+         site = "Pooled (REML)",
+         est = pooled_est, lo = pooled_lo, hi = pooled_hi,
+         type = "Pooled"
+       )
+   ) %>%
+   mutate(
+     site = factor(site, levels = c(sort(unique(no2_site_effects$site)), "Pooled (REML)")),
+     outcome_label = factor(outcome_label, levels = outcome_map$outcome_label)
+   )
+ 
+ readr::write_csv(plot_dat, file.path(out_dir, "no2_adj_plus_covid_site_and_pooled.csv"))
+ 
+ # -------------------------
+ # 5) Publication-ready forest plot (facet by outcome)
+ # -------------------------
+ p_forest <- ggplot(plot_dat, aes(x = est, y = site)) +
+   geom_vline(xintercept = 1, linetype = 3, linewidth = 0.4) +
+   geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.18, linewidth = 0.6) +
+   geom_point(aes(size = type), shape = 16) +
+   scale_x_log10() +
+   scale_size_manual(values = c("Site" = 2.2, "Pooled" = 3.2), guide = "none") +
+   facet_grid(outcome_label ~ ., scales = "free_y", space = "free_y") +
+   labs(
+     title = expression("NO"[2] * " effect per 10 ppb (models adjusted for COVID period)"),
+     x = expression("Effect estimate per 10 ppb NO"[2] * " (log scale)"),
+     y = NULL
+   ) +
+   theme_classic(base_size = 13) +
+   theme(
+     plot.title = element_text(face = "bold"),
+     strip.text.y = element_text(face = "bold"),
+     axis.title.x = element_text(face = "bold")
+   )
+ 
+ ggsave(
+   filename = file.path(out_dir, "forest_no2_adj_plus_covid_by_outcome.png"),
+   plot = p_forest,
+   width = 8.5, height = 9.0, units = "in", dpi = 600, bg = "white"
+ )
+ ggsave(
+   filename = file.path(out_dir, "forest_no2_adj_plus_covid_by_outcome.pdf"),
+   plot = p_forest,
+   width = 8.5, height = 9.0, units = "in", device = cairo_pdf
+ )
+ 
+ # -------------------------
+ # 6) A concise “results” table for manuscript text
+ # -------------------------
+ pooled_for_text <- pooled %>%
+   transmute(
+     outcome = outcome_label,
+     measure = measure_label,
+     k,
+     est = pooled_est,
+     lo = pooled_lo,
+     hi = pooled_hi,
+     p = pval,
+     I2 = i2
+   ) %>%
+   mutate(
+     effect_ci = sprintf("%.2f (%.2f–%.2f)", est, lo, hi),
+     p_fmt = ifelse(p < 0.001, "<0.001", sprintf("%.3f", p)),
+     I2_fmt = sprintf("%.1f%%", I2)
+   ) %>%
+   select(outcome, measure, k, effect_ci, p_fmt, I2_fmt)
+ 
+ readr::write_csv(pooled_for_text, file.path(out_dir, "pooled_no2_adj_plus_covid_for_text.csv"))
+ 
+ print(pooled_for_text)
+ 
+
+##### pooled ARF subtypes
+
+ # =========================
+ # Pooled NO2 curves by ARF subtype
+ # using site_preds_*_by_{sex|race} files that already contain arf_subtype
+ # =========================
+ 
+
+ # ---- REQUIRED: pool_curves() must already exist in your session ----
+ # (you used it earlier; this script assumes it is defined)
+ 
+ # -------------------------
+ # Cleaning helpers
+ # -------------------------
+ clean_subtype <- function(x) {
+   x_chr <- as.character(x)
+   x_chr <- str_trim(x_chr)
+   x_chr <- str_replace_all(x_chr, "\\s+", " ")
+   x_chr <- str_to_lower(x_chr)
+   
+   dplyr::case_when(
+     x_chr %in% c("hypoxemic", "hypoxaemic") ~ "Hypoxemic",
+     x_chr %in% c("hypercapnic")            ~ "Hypercapnic",
+     x_chr %in% c("mixed")                  ~ "Mixed",
+     TRUE                                   ~ str_to_title(x_chr)
+   )
+ }
+ 
+ # -------------------------
+ # Pool/plot helpers
+ # -------------------------
+ prep_ribbon_df <- function(df, group_var, group_clean_fn = NULL, levels = NULL) {
+   group_var <- rlang::ensym(group_var)
+   group_nm  <- rlang::as_name(group_var)
+   
+   out <- df %>%
+     mutate(
+       no2_10 = as.numeric(.data$no2_10),
+       pred   = as.numeric(.data$pred),
+       lo     = as.numeric(.data$lo),
+       hi     = as.numeric(.data$hi)
+     ) %>%
+     filter(is.finite(no2_10), is.finite(pred), is.finite(lo), is.finite(hi)) %>%
+     mutate(
+       lo = pmin(lo, hi),
+       hi = pmax(lo, hi),
+       pred = pmax(lo, pmin(pred, hi))
+     )
+   
+   if (!is.null(group_clean_fn)) {
+     out[[group_nm]] <- group_clean_fn(out[[group_nm]])
+   }
+   
+   # one row per group × x for clean ribbons
+   out <- out %>%
+     group_by(.data[[group_nm]], no2_10) %>%
+     summarise(
+       pred = mean(pred, na.rm = TRUE),
+       lo   = mean(lo,   na.rm = TRUE),
+       hi   = mean(hi,   na.rm = TRUE),
+       .groups = "drop"
+     ) %>%
+     arrange(.data[[group_nm]], no2_10)
+   
+   if (!is.null(levels)) {
+     out[[group_nm]] <- factor(out[[group_nm]], levels = levels)
+   }
+   
+   out
+ }
+ 
+ plot_ribbon_pub <- function(df, group_var, title_expr, ylab, palette = NULL) {
+   group_var <- rlang::ensym(group_var)
+   
+   p <- ggplot(
+     df,
+     aes(
+       x = no2_10,
+       y = pred,
+       color = !!group_var,
+       fill  = !!group_var,
+       group = !!group_var
+     )
+   ) +
+     geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.08, color = NA) +
+     geom_line(linewidth = 1.15) +
+     labs(
+       title = title_expr,
+       x     = expression(NO[2] * " (per 10 ppb)"),
+       y     = ylab,
+       color = NULL,
+       fill  = NULL
+     ) +
+     theme_classic(base_size = 13) +
+     theme(
+       plot.title       = element_text(face = "bold"),
+       axis.title       = element_text(face = "bold"),
+       legend.position  = "right",
+       legend.key.width = unit(0.9, "lines")
+     )
+   
+   if (!is.null(palette)) {
+     p <- p +
+       scale_color_manual(values = palette) +
+       scale_fill_manual(values  = palette)
+   }
+   
+   p
+ }
+ 
+ # -------------------------
+ # Configuration
+ # -------------------------
+ subtype_dir <- "/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARFVI/sites/analysis/subtype"
+ 
+ # Choose which set of site_preds files to use as the source:
+ # "sex" uses:  site_preds_{outcome}_by_sex*.csv
+ # "race" uses: site_preds_{outcome}_by_race*.csv
+ source_group <- "sex"  # <-- change to "race" if desired
+ 
+ outcomes <- tibble::tribble(
+   ~outcome_key, ~file_key, ~ylab,                              ~link,   ~title_stub,
+   "30d",        "30d",     "Predicted probability",            "logit", "30-day mortality vs ",
+   "inhosp",     "inhosp",  "Predicted probability",            "logit", "In-hospital mortality vs ",
+   "vent",       "vent",    "Predicted mean\nventilation hours", "log",   "Ventilation hours vs "
+ )
+ 
+ # ARF subtype ordering + palette
+ subtype_levels <- c("Hypoxemic", "Hypercapnic", "Mixed")
+ pal_subtype <- brewer.pal(3, "Dark2")  # clean, colorblind-friendly-ish
+ 
+ # -------------------------
+ # Run: pooled curves by ARF subtype for each outcome
+ # -------------------------
+ plots <- list()
+ 
+ for (o in seq_len(nrow(outcomes))) {
+   o_key  <- outcomes$outcome_key[o]
+   f_key  <- outcomes$file_key[o]
+   ylab   <- outcomes$ylab[o]
+   link   <- outcomes$link[o]
+   t_stub <- outcomes$title_stub[o]
+   
+   files <- list.files(
+     subtype_dir,
+     pattern = paste0("^site_preds_", f_key, "_by_", source_group, ".*\\.csv$"),
+     full.names = TRUE
+   )
+   
+   if (length(files) == 0) {
+     message("No files found for outcome=", o_key, " using by_", source_group,
+             " (pattern: site_preds_", f_key, "_by_", source_group, "...)")
+     next
+   }
+   
+   pooled_raw <- pool_curves(
+     files     = files,
+     group_var = "arf_subtype",
+     xvar      = "no2_10",
+     link      = link
+   )
+   
+   pooled <- prep_ribbon_df(
+     pooled_raw,
+     group_var = arf_subtype,
+     group_clean_fn = clean_subtype,
+     levels = subtype_levels
+   )
+   
+   title_expr <- as.expression(bquote(.(t_stub) * NO[2] * ""))
+   
+   p <- plot_ribbon_pub(
+     pooled,
+     group_var  = arf_subtype,
+     title_expr = title_expr,
+     ylab       = ylab,
+     palette    = pal_subtype
+   )
+   
+   plot_name <- paste0("subtype_", o_key, "_from_", source_group)
+   plots[[plot_name]] <- p
+   print(p)
+ }
+ 
+ # -------------------------
+ # Save figures (high-res)
+ # -------------------------
+ output_dir <- file.path(subtype_dir, "output")
+ dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+ 
+ png_w <- 7.5
+ png_h <- 5.0
+ dpi   <- 600
+ 
+ for (nm in names(plots)) {
+   p <- plots[[nm]]
+   
+   ggsave(
+     filename = file.path(output_dir, paste0(nm, ".png")),
+     plot     = p,
+     width    = png_w,
+     height   = png_h,
+     units    = "in",
+     dpi      = dpi,
+     bg       = "white"
+   )
+   
+   ggsave(
+     filename = file.path(output_dir, paste0(nm, ".pdf")),
+     plot     = p,
+     width    = png_w,
+     height   = png_h,
+     units    = "in",
+     device   = cairo_pdf
+   )
+ }
+ 
+ message("Done. Saved to: ", output_dir)
+ 
+ 
+ # If you used source_group <- "sex" in the script:
+ pA <- plots[["subtype_30d_from_sex"]]
+ pB <- plots[["subtype_inhosp_from_sex"]]
+ pC <- plots[["subtype_vent_from_sex"]]
+ 
+ # If you used source_group <- "race" instead, swap to:
+ # pA <- plots[["subtype_30d_from_race"]]
+ # pB <- plots[["subtype_inhosp_from_race"]]
+ # pC <- plots[["subtype_vent_from_race"]]
+ 
+ # Build a single-row, 3-panel figure with A–C labels
+ fig_ABC <- cowplot::plot_grid(
+   pA, pB, pC,
+   nrow = 3,
+   labels = c("A", "B", "C"),
+   label_size = 16,
+   label_fontface = "bold",
+   align = "hv",
+   axis = "tb"
+ )
+ 
+ # Save high-res outputs
+ output_dir <- file.path(subtype_dir, "output")
+ dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+ 
+ ggsave(
+   filename = file.path(output_dir, "NO2_ARFsubtype_pooled_ABC.png"),
+   plot     = fig_ABC,
+   width    = 5.5, height = 9, units = "in",
+   dpi      = 600,
+   bg       = "white"
+ )
+ 
+ ggsave(
+   filename = file.path(output_dir, "NO2_ARFsubtype_pooled_ABC.pdf"),
+   plot     = fig_ABC,
+   width    = 18, height = 5.5, units = "in",
+   device   = cairo_pdf
+ )
+ 
+ fig_ABC
+
+ 
+ library(tidyverse)
+ library(sf)
+ library(tigris)
+ library(scales)
+ library(viridisLite)
+ 
+ options(tigris_use_cache = TRUE)
+ 
+ # ----------------------------
+ # 1) Counties (CONUS + DC)
+ # ----------------------------
+ get_conus_counties <- function(year = 2020, remove_holes = TRUE) {
+   drop_states <- c("02","15","72","60","66","69","78") # AK, HI, PR, territories
+   
+   x <- tigris::counties(cb = TRUE, year = year, class = "sf") |>
+     dplyr::filter(!STATEFP %in% drop_states) |>
+     dplyr::mutate(GEOID = as.character(GEOID)) |>
+     sf::st_transform(4326) |>
+     sf::st_make_valid()
+   
+   if (remove_holes) {
+     # Rebuild polygons to drop interior rings (water bodies)
+     x <- x |>
+       dplyr::group_by(GEOID) |>
+       dplyr::summarise(geometry = sf::st_union(geometry), .groups = "drop")
+   }
+   
+   x
+ }
+ 
+ us_counties_ll <- get_conus_counties(year = 2020, remove_holes = TRUE)
+ 
+ conus_xlim <- c(-125, -66.5)
+ conus_ylim <- c(24, 49)
+ 
+ # ----------------------------
+ # 2) Summarize county mean
+ # ----------------------------
+ summarize_county_mean <- function(df, years = 2018:2024,
+                                   value_candidates = c("value","no2_mean","pm25_mean")) {
+   stopifnot(all(c("GEOID","year") %in% names(df)))
+   
+   df <- df |>
+     mutate(
+       GEOID = str_pad(as.character(GEOID), width = 5, side = "left", pad = "0"),
+       year  = as.integer(year)
+     )
+   
+   val_col <- value_candidates[value_candidates %in% names(df)][1]
+   if (is.na(val_col)) stop("No value column found in: ", paste(names(df), collapse=", "))
+   
+   df |>
+     filter(year %in% years) |>
+     group_by(GEOID) |>
+     summarise(
+       mean_value = mean(.data[[val_col]], na.rm = TRUE),
+       n_years    = sum(!is.na(.data[[val_col]])),
+       .groups = "drop"
+     )
+ }
+ 
+ # ----------------------------
+ # 3) Bins + labels
+ # ----------------------------
+ make_bins <- function(x, probs = c(0.10, 0.25, 0.40, 0.55, 0.70, 0.82, 0.90, 0.95, 0.975, 0.99)) {
+   qs <- quantile(x, probs = probs, na.rm = TRUE, names = FALSE, type = 7)
+   unique(c(-Inf, qs, Inf))
+ }
+ 
+ fmt_range_labels <- function(brks, digits = 2) {
+   b <- brks
+   n <- length(b) - 1
+   labs <- character(n)
+   for (i in seq_len(n)) {
+     lo <- b[i]; hi <- b[i+1]
+     if (is.infinite(lo) && is.finite(hi)) {
+       labs[i] <- paste0("≤", round(hi, digits))
+     } else if (is.finite(lo) && is.infinite(hi)) {
+       labs[i] <- paste0("≥", round(lo, digits))
+     } else {
+       labs[i] <- paste0(round(lo, digits), "–", round(hi, digits))
+     }
+   }
+   labs
+ }
+ 
+ # ----------------------------
+ # 4) ARF-style binned map with per-map palette
+ # ----------------------------
+ legend_expr_pm25 <- expression(bold(PM[2.5]~"(" * mu * "g/" * m^3 * ")"))
+legend_expr_no2  <- expression(bold(NO[2]~"(ppb)"))
+ 
+ make_pollutant_map_arf_style <- function(summary_df,
+                                          title,
+                                          legend_title,
+                                          filename = NULL,
+                                          palette_option = "magma",   # distinct per pollutant
+                                          na_fill = "#bdbdbd",
+                                          border_col = "white",
+                                          border_lwd = 0.05,
+                                          bins = NULL,
+                                          digits = 2) {
+   
+   plot_df <- us_counties_ll |>
+     left_join(summary_df, by = "GEOID")
+   
+   vals <- plot_df$mean_value
+   if (is.null(bins)) bins <- make_bins(vals)
+   labels <- fmt_range_labels(bins, digits = digits)
+   
+   plot_df <- plot_df |>
+     mutate(
+       bin = cut(mean_value, breaks = bins, include.lowest = TRUE, right = TRUE, labels = labels),
+       bin = factor(bin, levels = labels)
+     )
+   
+   pal <- viridisLite::viridis(length(labels), option = palette_option)
+   names(pal) <- labels
+   
+   gg <- ggplot(plot_df) +
+     geom_sf(aes(fill = bin), color = border_col, linewidth = border_lwd) +
+     scale_fill_manual(
+       name = legend_title,
+       values = pal,
+       drop = FALSE,
+       na.value = na_fill,
+       na.translate = FALSE,
+       guide = guide_legend(reverse = TRUE)  # high at top
+     ) +
+     coord_sf(xlim = conus_xlim, ylim = conus_ylim, expand = FALSE) +
+     labs(
+       title = title,
+       subtitle = "County-level average, 2018–2024"
+     ) +
+     theme_void(base_size = 12) +
+     theme(
+       plot.title = element_text(size = 20, face = "bold", hjust = 0),
+       plot.subtitle = element_text(size = 14, hjust = 0, margin = margin(t = 4, b = 8)),
+       legend.position = "right",
+       legend.title = element_text(size = 18, face = "bold"),
+       legend.text  = element_text(size = 12),
+       plot.margin = margin(8, 8, 8, 8)
+     )
+   
+   if (!is.null(filename)) {
+     ggsave(filename, gg, width = 14, height = 9, dpi = 300)
+   }
+   gg
+ }
+ 
+ # ----------------------------
+ # 5) Build summaries (your existing dfs)
+ # ----------------------------
+ no2_cnty_mean  <- summarize_county_mean(no2_us,  years = 2018:2024, value_candidates = c("no2_mean","value"))
+ pm25_cnty_mean <- summarize_county_mean(pm25_us, years = 2018:2024, value_candidates = c("pm25_mean","value"))
+ 
+ # ----------------------------
+ # 6) Draw maps with distinct palettes
+ # ----------------------------
+ p_pm25 <- make_pollutant_map_arf_style(
+   pm25_cnty_mean,
+   title        = "Average fine particular matter (2.5) concentration estimate by U.S. County",
+   legend_title = expression(PM[2.5]~"("*mu*"g/"*m^3*")"),
+   palette_option = "magma",  # PM2.5 palette
+   filename     = "map_pm25_conus_2018_2024_ARFstyle.png"
+ )
+ 
+ p_no2 <- make_pollutant_map_arf_style(
+   no2_cnty_mean,
+   title        = "Average nitrogen dioxide concentration estimate by U.S. County",
+   legend_title = expression(NO[2]~"(ppb)"),
+   palette_option = "cividis", # NO2 palette (distinct from PM2.5)
+   filename     = "map_no2_conus_2018_2024_ARFstyle.png"
+ )
+ 
+ p_pm25
+ p_no2
+ 
+ ggsave(
+   filename = file.path(dir_out, "map_pm25_conus_2018_2024.png"),
+   plot     = p_pm25,
+   width    = 14,
+   height   = 9,
+   dpi      = 600
+ )
+ 
+ ggsave(
+   filename = file.path(dir_out, "map_no2_conus_2018_2024.png"),
+   plot     = p_no2,
+   width    = 14,
+   height   = 9,
+   dpi      = 600
+ )
+
+
+ library(patchwork)
+ 
+ # Rename for clarity if needed
+
+ 
+ p_3panel_stacked <- (p_arf / p_pm25 / p_no2) +
+   plot_annotation(tag_levels = "A") &
+   theme(
+     plot.tag = element_text(face = "bold", size = 18),
+     plot.tag.position = c(0.01, 0.99)  # top-left of each panel
+   )
+ 
+ # Save: same WIDTH as ARF, triple HEIGHT
+ ggsave(
+   filename = file.path(dir_out, "FIG_3panel_ARF_PM25_NO2_STACKED_ABC.png"),
+   plot     = p_3panel_stacked,
+   width    = 14,
+   height   = 27,   # 3 × 9 inches
+   dpi      = 300
+ )
+ 
+ ggsave(
+   filename = file.path(dir_out, "FIG_3panel_ARF_PM25_NO2_STACKED_ABC.pdf"),
+   plot     = p_3panel_stacked,
+   width    = 14,
+   height   = 27,
+   device   = cairo_pdf
+ )
+ 
+ p_3panel_stacked
+ 
+ library(cowplot)
+ 
+ p_3panel_stacked <- plot_grid(
+   p_arf, p_pm25, p_no2,
+   ncol = 1,
+   labels = c("A", "B", "C"),
+   label_fontface = "bold",
+   label_size = 38,
+   label_x = 0.02,
+   label_y = 0.98,
+   hjust = 0,
+   vjust = 1,
+   align = "v",
+   axis = "l"
+ )
+ 
+ p_3panel_stacked
+ 
+ ggsave(
+   filename = file.path(dir_out, "FIG_3panel_ARF_PM25_NO2_STACKED_ABC.png"),
+   plot     = p_3panel_stacked,
+   width    = 14,
+   height   = 27,
+   dpi      = 600
+ )
+ 
+ 
+ 
+ 
+ # tighter margins for ALL three plots (keeps ARF-like look, just less whitespace)
+ tight_theme <- theme(
+   plot.margin   = margin(2, 6, 2, 6),  # top, right, bottom, left (shrink these)
+   plot.subtitle = element_text(margin = margin(t = 2, b = 4))
+ )
+ 
+ p_3panel_stacked_tight <-
+   (p_arf / p_pm25 / p_no2) +
+   plot_annotation(tag_levels = "A") &
+   tight_theme &
+   theme(
+     plot.tag = element_text(face = "bold", size = 18),
+     plot.tag.position = c(0.01, 0.99)
+   )
+ 
+ # Reduce the spacing between patchwork panels
+ p_3panel_stacked_tight <- p_3panel_stacked_tight +
+   plot_layout(ncol = 1, heights = c(1, 1, 1)) &
+   theme(panel.spacing = unit(0.15, "lines"))  # smaller gap
+ 
+ p_3panel_stacked_tight
+ 
+ p_3panel_stacked_nogap <-
+   (p_arf + theme(plot.margin = margin(0, 6, 0, 6))) /
+   (p_pm25 + theme(plot.margin = margin(0, 6, 0, 6))) /
+   (p_no2 + theme(plot.margin = margin(0, 6, 0, 6))) +
+   plot_annotation(tag_levels = "A") &
+   theme(plot.tag = element_text(face="bold", size=18),
+         plot.tag.position = c(0.01, 0.99))
+ 
+ p_3panel_stacked_nogap
+ 
+ 
+ ggsave(
+   filename = file.path(dir_out, "FIG_3panel_ARF_PM25_NO2_STACKED_ABC_tight.png"),
+   plot     = p_3panel_stacked_nogap,
+   width    = 14,
+   height   = 27,
+   dpi      = 600
+ )
+ 
+ 
+ library(tidyverse)
+ library(scales)
+ 
+ # --- Enter your table + effect-type mapping ---
+ df <- tribble(
+   ~Outcome,                          ~PM25,                     ~NO2,                      ~EffectType,
+   "30-day mortality",                "1.06 (1.04–1.09)",        "1.11 (1.05–1.17)",         "OR",
+   "In-hospital mortality",           "1.06 (1.04–1.08)",        "1.09 (1.04–1.14)",         "OR",
+   "ICU length of stay",              "0.99 (0.98–1.01)",        "0.99 (0.96–1.01)",         "IRR",
+   "Ventilation hours",               "1.02 (0.97–1.07)",        "1.01 (1.00–1.03)",         "IRR",
+   "Persistent respiratory failure", "1.67 (0.71–3.97)",        "1.32 (0.87–1.99)",         "SHR",
+   "Successful extubation",          "0.66 (0.40–1.09)",        "0.84 (0.69–1.03)",         "SHR",
+   "Death",                          "2.31 (1.22–4.38)",        "1.50 (1.16–1.94)",         "SHR"
+ )
+ 
+ parse_est <- function(x){
+   x <- str_replace_all(x, "–", "-")  # en-dash -> hyphen
+   est <- as.numeric(str_extract(x, "^[0-9.]+"))
+   lo  <- as.numeric(str_extract(x, "(?<=\\()[0-9.]+"))
+   hi  <- as.numeric(str_extract(x, "(?<=-)[0-9.]+(?=\\))"))
+   tibble(est = est, lo = lo, hi = hi)
+ }
+ 
+ # your df tribble as you created it above ...
+ 
+ plot_df <- df %>%
+   pivot_longer(cols = c(PM25, NO2), names_to = "Pollutant", values_to = "Estimate") %>%
+   mutate(
+     Pollutant = recode(Pollutant,
+                        PM25 = "PM[2.5]",   # store as parseable text
+                        NO2  = "NO[2]")     # store as parseable text
+   ) %>%
+   bind_cols(map_dfr(.$Estimate, parse_est)) %>%
+   mutate(
+     Outcome = factor(Outcome, levels = rev(unique(df$Outcome))),
+     EffectType = factor(EffectType, levels = c("OR", "IRR", "SHR"))
+   )
+ 
+ shape_map <- c(OR = 16, IRR = 17, SHR = 15)
+ color_map <- c(OR = "#1b9e77", IRR = "#d95f02", SHR = "#7570b3")
+ 
+ xmin <- min(plot_df$lo, na.rm = TRUE)
+ xmax <- max(plot_df$hi, na.rm = TRUE)
+ 
+ p <- ggplot(plot_df, aes(x = est, y = Outcome, color = EffectType, shape = EffectType)) +
+   geom_vline(xintercept = 1, linewidth = 0.4, linetype = "dashed", alpha = 0.7) +
+   geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.15, linewidth = 0.6) +
+   geom_point(size = 2.6, stroke = 0.4) +
+   facet_wrap(~ Pollutant, ncol = 2, labeller = label_parsed) +
+   scale_x_log10(
+     limits = c(xmin * 0.95, xmax * 1.05),
+     breaks = c(0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4),
+     labels = label_number(accuracy = 0.01)
+   ) +
+   scale_shape_manual(values = shape_map, name = "Effect measure") +
+   scale_color_manual(values = color_map, name = "Effect measure") +
+   labs(
+     title = "Associations of PM₂.₅ and NO₂ with Acute Respiratory Failure Outcomes",
+     subtitle = "Point estimates with 95% confidence intervals (log scale; dashed line indicates null)",
+     x = "Effect estimate (ratio scale)",
+     y = NULL
+   ) +
+   theme_minimal(base_size = 12) +
+   theme(
+     panel.grid.major.y = element_blank(),
+     panel.grid.minor = element_blank(),
+     strip.text = element_text(face = "bold"),
+     legend.position = "bottom",
+     legend.title = element_text(face = "bold"),
+     plot.title = element_text(face = "bold")
+   )
+ 
+ p
+ ggsave("forest_pm25_no2_outcomes.png", p, width = 14, height = 9, dpi = 300)
+ 
+ 
+ 
+ # ============================================================
+ # Combine already-saved subtype/output panels into ONE 2x2 figure
+ # Assumes you already have:
+ #   sex_inhosp.(png/pdf), sex_vent.(png/pdf),
+ #   race_inhosp.(png/pdf), race_vent.(png/pdf)
+ # in: subtype_dir/output
+ # ============================================================
+ 
+ library(cowplot)
+ library(ggplot2)
+ 
+ subtype_dir <- "/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARFVI/sites/analysis/subtype"
+ out_dir     <- file.path(subtype_dir, "output")
+ 
+ # ---- file paths (match your naming convention) ----
+ f_sex_inhosp  <- file.path(out_dir, "sex_inhosp.png")
+ f_sex_vent    <- file.path(out_dir, "sex_vent.png")
+ f_race_inhosp <- file.path(out_dir, "race_inhosp.png")
+ f_race_vent   <- file.path(out_dir, "race_vent.png")
+ 
+ # ---- basic existence checks ----
+ stopifnot(file.exists(f_sex_inhosp))
+ stopifnot(file.exists(f_sex_vent))
+ stopifnot(file.exists(f_race_inhosp))
+ stopifnot(file.exists(f_race_vent))
+ 
+ # ---- read in as grobs ----
+ g_sex_inhosp  <- cowplot::ggdraw() + cowplot::draw_image(f_sex_inhosp)
+ g_sex_vent    <- cowplot::ggdraw() + cowplot::draw_image(f_sex_vent)
+ g_race_inhosp <- cowplot::ggdraw() + cowplot::draw_image(f_race_inhosp)
+ g_race_vent   <- cowplot::ggdraw() + cowplot::draw_image(f_race_vent)
+ 
+ # Optional: add panel labels (A–D). Remove label_* args if you don't want.
+ p_4panel <- cowplot::plot_grid(
+   g_sex_inhosp, g_sex_vent,
+   g_race_inhosp, g_race_vent,
+   ncol = 2,
+   align = "hv",
+   axis = "tblr",
+   labels = c("A", "B", "C", "D"),
+   label_size = 18,
+   label_fontface = "bold"
+ )
+ 
+ # ---- display ----
+ print(p_4panel)
+ 
+ # ---- save ----
+ ggsave(
+   filename = file.path(out_dir, "sex_race_inhosp_vent_4panel.png"),
+   plot     = p_4panel,
+   width    = 14.5,
+   height   = 10.5,
+   units    = "in",
+   dpi      = 600,
+   bg       = "white"
+ )
+ 
+ ggsave(
+   filename = file.path(out_dir, "sex_race_inhosp_vent_4panel.pdf"),
+   plot     = p_4panel,
+   width    = 14.5,
+   height   = 10.5,
+   units    = "in",
+   device   = cairo_pdf
+ )
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 

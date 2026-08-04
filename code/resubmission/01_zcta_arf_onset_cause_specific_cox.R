@@ -71,6 +71,7 @@ charlson_lookback_days <- as.integer(config$charlson_lookback_days %||% 365)
 charlson_include_index <- isTRUE(config$charlson_include_index_diagnoses %||% TRUE)
 imv_gap_hours <- as.numeric(config$imv_gap_hours %||% 6)
 successful_extubation_hours <- as.numeric(config$successful_extubation_hours %||% 48)
+primary_min_icu_los_hours <- as.numeric(config$primary_min_icu_los_hours %||% 24)
 
 stamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
 out_root <- file.path(repo, config$output_dir %||% "output/resubmission", stamp)
@@ -335,7 +336,10 @@ icu_bounds <- adt %>%
     last_icu_out = suppressWarnings(max(out_dttm, na.rm = TRUE)),
     .groups = "drop"
   ) %>%
-  mutate(last_icu_out = if_else(is.finite(last_icu_out), last_icu_out, as.POSIXct(NA, tz = time_zone)))
+  mutate(
+    last_icu_out = if_else(is.finite(last_icu_out), last_icu_out, as.POSIXct(NA, tz = time_zone)),
+    icu_los_hours = as.numeric(difftime(last_icu_out, first_icu_in, units = "hours"))
+  )
 
 base <- hospitalization %>%
   inner_join(icu_bounds, by = "hospitalization_id") %>%
@@ -382,6 +386,40 @@ labs <- read_tbl("labs") %>%
     lab_value_numeric = suppressWarnings(as.numeric(first_existing(pick(everything()), c("lab_value_numeric", "lab_value"), default = NA)))
   ) %>%
   filter(!is.na(lab_result_dttm), !is.na(lab_value_numeric))
+
+med_admin <- read_tbl("medication_admin_continuous", required = FALSE) %>%
+  filter(hospitalization_id %in% base_ids) %>%
+  transmute(
+    hospitalization_id,
+    admin_dttm = safe_ts(admin_dttm),
+    med_category = str_to_lower(as.character(med_category)),
+    med_dose = suppressWarnings(as.numeric(med_dose)),
+    med_dose_unit = str_to_lower(as.character(med_dose_unit))
+  ) %>%
+  filter(!is.na(admin_dttm))
+
+patient_assessments <- read_tbl("patient_assessments", required = FALSE) %>%
+  filter(hospitalization_id %in% base_ids) %>%
+  transmute(
+    hospitalization_id,
+    recorded_dttm = safe_ts(recorded_dttm),
+    assessment_category = str_to_lower(as.character(assessment_category)),
+    numerical_value = suppressWarnings(as.numeric(numerical_value))
+  ) %>%
+  filter(!is.na(recorded_dttm))
+
+message("Calculating first-24-hour ICU SOFA scores...")
+source(file.path(repo, "utils", "sofa_calculator.R"))
+sofa_scores <- calculate_sofa(
+  cohort_data = base %>% transmute(hospitalization_id, icu_admit_time = first_icu_in),
+  vitals_df = vitals,
+  labs_df = labs,
+  support_df = resp_support,
+  med_admin_df = med_admin,
+  scores_df = patient_assessments,
+  window_hours = 24,
+  safe_ts = safe_ts
+)
 
 message("Identifying ARF onset...")
 window_tbl <- base %>% select(hospitalization_id, arf_window_start, arf_window_end)
@@ -696,7 +734,12 @@ if (length(no2_monthly_files)) {
 
 cohort <- cohort %>%
   left_join(pm25_exposure, by = "hospitalization_id") %>%
-  left_join(no2_exposure, by = "hospitalization_id")
+  left_join(no2_exposure, by = "hospitalization_id") %>%
+  left_join(
+    sofa_scores %>%
+      select(hospitalization_id, sofa_total, sofa_cv, sofa_coag, sofa_liver, sofa_renal, sofa_resp, sofa_cns),
+    by = "hospitalization_id"
+  )
 
 message("Linking ZCTA ACS social vulnerability covariates...")
 zcta_acs <- readr::read_csv(zcta_acs_path, show_col_types = FALSE, progress = FALSE) %>%
@@ -857,7 +900,7 @@ events <- event_data %>%
   ) %>%
   mutate(ftime_days = pmax(ftime_days, 1 / 24))
 
-analysis_df <- cohort %>%
+analysis_df_all_icu_los <- cohort %>%
   left_join(events, by = "hospitalization_id") %>%
   mutate(
     site = site_name,
@@ -874,14 +917,23 @@ analysis_df <- cohort %>%
   ) %>%
   filter(!is.na(ftime_days), is.finite(ftime_days), ftime_days > 0)
 
+analysis_df <- analysis_df_all_icu_los %>%
+  filter(!is.na(icu_los_hours), icu_los_hours >= primary_min_icu_los_hours)
+
+readr::write_csv(
+  analysis_df_all_icu_los,
+  file.path(out_root, "resubmission_analysis_dataset_no_icu_los_restriction.csv")
+)
 readr::write_csv(analysis_df, file.path(out_root, "resubmission_analysis_dataset.csv"))
 
 cohort_summary <- tibble(
   site = site_name,
+  cohort = glue("primary_icu_los_ge_{primary_min_icu_los_hours}h"),
   n_arf = nrow(analysis_df),
   n_patients = n_distinct(analysis_df$patient_id),
   n_with_pm25 = sum(!is.na(analysis_df$pm25_12m_zcta)),
   n_with_no2 = sum(!is.na(analysis_df$no2_12m_zcta)),
+  n_with_sofa_total = sum(!is.na(analysis_df$sofa_total)),
   n_with_zcta_acs = sum(complete.cases(analysis_df[, c(
     "acs_pct_poverty",
     "acs_pct_unemployed",
@@ -899,8 +951,45 @@ cohort_summary <- tibble(
 )
 readr::write_csv(cohort_summary, file.path(out_root, "resubmission_cohort_summary.csv"))
 
+cohort_summary_no_icu_los_restriction <- tibble(
+  site = site_name,
+  cohort = "sensitivity_no_icu_los_restriction",
+  n_arf = nrow(analysis_df_all_icu_los),
+  n_patients = n_distinct(analysis_df_all_icu_los$patient_id),
+  n_added_vs_primary = nrow(analysis_df_all_icu_los) - nrow(analysis_df),
+  n_with_pm25 = sum(!is.na(analysis_df_all_icu_los$pm25_12m_zcta)),
+  n_with_no2 = sum(!is.na(analysis_df_all_icu_los$no2_12m_zcta)),
+  n_with_sofa_total = sum(!is.na(analysis_df_all_icu_los$sofa_total)),
+  n_with_zcta_acs = sum(complete.cases(analysis_df_all_icu_los[, c(
+    "acs_pct_poverty",
+    "acs_pct_unemployed",
+    "acs_pct_no_vehicle",
+    "acs_pct_nonwhite",
+    "acs_median_household_income_10k",
+    "acs_pct_bachelor_plus"
+  )])),
+  n_death = sum(analysis_df_all_icu_los$event_code == 2, na.rm = TRUE),
+  n_extubation = sum(analysis_df_all_icu_los$event_code == 1, na.rm = TRUE),
+  n_persistent_rf = sum(analysis_df_all_icu_los$event_code == 3, na.rm = TRUE),
+  n_censored = sum(analysis_df_all_icu_los$event_code == 0, na.rm = TRUE),
+  mean_charlson = mean(analysis_df_all_icu_los$charlson_score, na.rm = TRUE),
+  median_charlson = median(analysis_df_all_icu_los$charlson_score, na.rm = TRUE)
+)
+readr::write_csv(
+  cohort_summary_no_icu_los_restriction,
+  file.path(out_root, "resubmission_cohort_summary_no_icu_los_restriction.csv")
+)
+
 message("Fitting cause-specific Cox models...")
-fit_cause_cox <- function(data, cause_code, cause_label, exposure_terms, model_label) {
+fit_cause_cox <- function(
+  data,
+  cause_code,
+  cause_label,
+  exposure_terms,
+  model_label,
+  include_arf_subtype = FALSE,
+  include_sofa_total = FALSE
+) {
   social_covars <- c(
     "acs_pct_poverty",
     "acs_pct_unemployed",
@@ -915,10 +1004,15 @@ fit_cause_cox <- function(data, cause_code, cause_label, exposure_terms, model_l
     "sex",
     "race_ethnicity",
     "charlson_score",
-    "arf_subtype",
     "index_year_f",
     social_covars
   )
+  if (include_arf_subtype) {
+    covars <- append(covars, "arf_subtype", after = match("charlson_score", covars))
+  }
+  if (include_sofa_total) {
+    covars <- append(covars, "sofa_total", after = match("charlson_score", covars))
+  }
   model_df <- data %>%
     select(ftime_days, event_code, all_of(covars)) %>%
     drop_na()
@@ -938,31 +1032,46 @@ fit_cause_cox <- function(data, cause_code, cause_label, exposure_terms, model_l
       conf_low = conf.low,
       conf_high = conf.high,
       p_value = p.value,
-      adjustment_set = paste(
-        "age_10",
-        "sex",
-        "race_ethnicity",
-        "charlson_score",
-        "arf_subtype",
-        "index_year_f",
-        paste(social_covars, collapse = " + "),
-        sep = " + "
-      )
+      adjustment_set = paste(setdiff(covars, exposure_terms), collapse = " + "),
+      includes_arf_subtype = include_arf_subtype,
+      includes_sofa_total = include_sofa_total
     )
 }
 
-cox_results <- bind_rows(
-  fit_cause_cox(analysis_df, 1, "Successful extubation", "pm25_per_5", "PM25 single-pollutant"),
-  fit_cause_cox(analysis_df, 2, "Death", "pm25_per_5", "PM25 single-pollutant"),
-  fit_cause_cox(analysis_df, 3, "Persistent respiratory failure", "pm25_per_5", "PM25 single-pollutant"),
-  fit_cause_cox(analysis_df, 1, "Successful extubation", "no2_per_10", "NO2 single-pollutant"),
-  fit_cause_cox(analysis_df, 2, "Death", "no2_per_10", "NO2 single-pollutant"),
-  fit_cause_cox(analysis_df, 3, "Persistent respiratory failure", "no2_per_10", "NO2 single-pollutant"),
-  fit_cause_cox(analysis_df, 1, "Successful extubation", c("pm25_per_5", "no2_per_10"), "PM25 + NO2"),
-  fit_cause_cox(analysis_df, 2, "Death", c("pm25_per_5", "no2_per_10"), "PM25 + NO2"),
-  fit_cause_cox(analysis_df, 3, "Persistent respiratory failure", c("pm25_per_5", "no2_per_10"), "PM25 + NO2")
-)
+fit_all_cause_cox <- function(data, include_arf_subtype = FALSE, include_sofa_total = FALSE) {
+  bind_rows(
+    fit_cause_cox(data, 1, "Successful extubation", "pm25_per_5", "PM25 single-pollutant", include_arf_subtype, include_sofa_total),
+    fit_cause_cox(data, 2, "Death", "pm25_per_5", "PM25 single-pollutant", include_arf_subtype, include_sofa_total),
+    fit_cause_cox(data, 3, "Persistent respiratory failure", "pm25_per_5", "PM25 single-pollutant", include_arf_subtype, include_sofa_total),
+    fit_cause_cox(data, 1, "Successful extubation", "no2_per_10", "NO2 single-pollutant", include_arf_subtype, include_sofa_total),
+    fit_cause_cox(data, 2, "Death", "no2_per_10", "NO2 single-pollutant", include_arf_subtype, include_sofa_total),
+    fit_cause_cox(data, 3, "Persistent respiratory failure", "no2_per_10", "NO2 single-pollutant", include_arf_subtype, include_sofa_total),
+    fit_cause_cox(data, 1, "Successful extubation", c("pm25_per_5", "no2_per_10"), "PM25 + NO2", include_arf_subtype, include_sofa_total),
+    fit_cause_cox(data, 2, "Death", c("pm25_per_5", "no2_per_10"), "PM25 + NO2", include_arf_subtype, include_sofa_total),
+    fit_cause_cox(data, 3, "Persistent respiratory failure", c("pm25_per_5", "no2_per_10"), "PM25 + NO2", include_arf_subtype, include_sofa_total)
+  )
+}
+
+cox_results <- fit_all_cause_cox(analysis_df, include_arf_subtype = FALSE)
 readr::write_csv(cox_results, file.path(out_root, "resubmission_cause_specific_cox_results.csv"))
+
+cox_results_arf_subtype_sensitivity <- fit_all_cause_cox(analysis_df, include_arf_subtype = TRUE)
+readr::write_csv(
+  cox_results_arf_subtype_sensitivity,
+  file.path(out_root, "resubmission_cause_specific_cox_results_arf_subtype_sensitivity.csv")
+)
+
+cox_results_sofa_sensitivity <- fit_all_cause_cox(analysis_df, include_sofa_total = TRUE)
+readr::write_csv(
+  cox_results_sofa_sensitivity,
+  file.path(out_root, "resubmission_cause_specific_cox_results_sofa_sensitivity.csv")
+)
+
+cox_results_no_icu_los_restriction <- fit_all_cause_cox(analysis_df_all_icu_los)
+readr::write_csv(
+  cox_results_no_icu_los_restriction,
+  file.path(out_root, "resubmission_cause_specific_cox_results_no_icu_los_restriction.csv")
+)
 
 message("Building unadjusted Aalen-Johansen CIFs...")
 make_cif_data <- function(data, exposure_group, exposure_label) {

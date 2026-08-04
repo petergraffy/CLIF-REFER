@@ -18,10 +18,12 @@ if (is.na(script_path)) {
 repo <- if (!is.na(script_path)) normalizePath(file.path(dirname(script_path), "..", ".."), mustWork = FALSE) else getwd()
 
 args <- commandArgs(trailingOnly = TRUE)
-out_root <- args[[1]] %||% NA_character_
+out_root <- if (length(args) >= 1) args[[1]] else NA_character_
+results_file <- if (length(args) >= 2) args[[2]] else "resubmission_cause_specific_cox_results.csv"
+output_suffix <- if (length(args) >= 3) args[[3]] else ""
 if (is.na(out_root)) {
   candidates <- list.dirs(file.path(repo, "output", "resubmission"), recursive = FALSE, full.names = TRUE)
-  candidates <- candidates[file.exists(file.path(candidates, "resubmission_cause_specific_cox_results.csv"))]
+  candidates <- candidates[file.exists(file.path(candidates, results_file))]
   if (!length(candidates)) stop("No resubmission output directory with Cox results found.")
   out_root <- candidates[which.max(file.info(candidates)$mtime)]
 }
@@ -64,7 +66,7 @@ theme_cox <- function(base_size = 18) {
 }
 
 cox_results <- read_csv(
-  file.path(out_root, "resubmission_cause_specific_cox_results.csv"),
+  file.path(out_root, results_file),
   show_col_types = FALSE
 ) %>%
   mutate(
@@ -133,15 +135,23 @@ p_cox <- ggplot(cox_results, aes(x = hazard_ratio, y = model_row, color = pollut
   scale_y_discrete(labels = function(x) parse(text = model_row_labels[x])) +
   labs(
     title = "Cause-Specific Cox Models",
-    subtitle = "Hazard ratios adjusted for demographics, Charlson score, ARF subtype, index year, and ZCTA ACS social vulnerability covariates",
+    subtitle = if (str_detect(results_file, "no_icu_los")) {
+      "Sensitivity model using the ARF cohort without the primary ICU length-of-stay restriction"
+    } else if (any(cox_results$includes_sofa_total %||% FALSE, na.rm = TRUE)) {
+      "Sensitivity model adjusted for demographics, Charlson score, SOFA total, index year, and ZCTA ACS social vulnerability covariates"
+    } else if (any(cox_results$includes_arf_subtype %||% FALSE, na.rm = TRUE)) {
+      "Sensitivity model adjusted for demographics, Charlson score, ARF subtype, index year, and ZCTA ACS social vulnerability covariates"
+    } else {
+      "Primary model adjusted for demographics, Charlson score, index year, and ZCTA ACS social vulnerability covariates"
+    },
     x = "Hazard ratio, log scale",
     y = NULL,
     color = "Pollutant"
   ) +
   theme_cox()
 
-png_path <- file.path(fig_dir, "resubmission_cause_specific_cox_models.png")
-pdf_path <- file.path(fig_dir, "resubmission_cause_specific_cox_models.pdf")
+png_path <- file.path(fig_dir, paste0("resubmission_cause_specific_cox_models", output_suffix, ".png"))
+pdf_path <- file.path(fig_dir, paste0("resubmission_cause_specific_cox_models", output_suffix, ".pdf"))
 ggsave(png_path, p_cox, width = 20, height = 9.5, dpi = 300)
 ggsave(pdf_path, p_cox, width = 20, height = 9.5)
 

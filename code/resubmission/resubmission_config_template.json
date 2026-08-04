@@ -12,6 +12,7 @@
   "study_start": "2018-01-01",
   "study_end": "2024-12-31",
   "followup_days": 30,
+  "primary_min_icu_los_hours": 24,
   "pm25_prior_months": 12,
   "no2_prior_months": 12,
   "no2_lag_years": 1,

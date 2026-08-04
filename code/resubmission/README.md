@@ -11,6 +11,7 @@ exposure/outcome regression workflow to:
 - fixed pre-ARF exposure interval
 - ZCTA-level PM2.5 and NO2 exposure assignment
 - ARF onset as time zero
+- primary cohort requiring ICU length of stay of at least 24 hours
 - cause-specific Cox proportional hazards models
 - baseline comorbidity adjustment with Charlson score
 - ZCTA-level ACS social vulnerability adjustment
@@ -37,10 +38,16 @@ without a complete 12-month pre-onset monthly NO2 window use the annual
 prior-year ZCTA NO2 file as a fallback. If monthly NO2 files are not found, all
 NO2 analyses use annual prior-year ZCTA NO2.
 
-Cause-specific Cox models adjust for age, sex, race/ethnicity, Charlson score,
-ARF subtype, index year, and ZCTA ACS variables for poverty, unemployment, no
-vehicle access, non-White population, median household income, and
-bachelor-or-higher educational attainment.
+Primary cause-specific Cox models adjust for age, sex, race/ethnicity,
+Charlson score, index year, and ZCTA ACS variables for poverty, unemployment,
+no vehicle access, non-White population, median household income, and
+bachelor-or-higher educational attainment. A separate sensitivity model also
+adjusts for ARF subtype, and another sensitivity model adjusts for total SOFA
+score calculated during the first 24 hours of ICU admission.
+
+To address possible bias from excluding short ICU stays, the script also writes
+a no-ICU-length-of-stay-restriction sensitivity cohort and repeats the primary
+cause-specific Cox models in that secondary cohort.
 
 ## Run
 
@@ -53,7 +60,11 @@ Rscript code/resubmission/01_zcta_arf_onset_cause_specific_cox.R
 Outputs are written to `output/resubmission/<timestamp>/` by default:
 
 - `resubmission_analysis_dataset.csv`
+- `resubmission_analysis_dataset_no_icu_los_restriction.csv`
 - `resubmission_cause_specific_cox_results.csv`
+- `resubmission_cause_specific_cox_results_arf_subtype_sensitivity.csv`
+- `resubmission_cause_specific_cox_results_sofa_sensitivity.csv`
+- `resubmission_cause_specific_cox_results_no_icu_los_restriction.csv`
 - `resubmission_aalen_johansen_cif_plot_data.csv`
 - `resubmission_aalen_johansen_cif_quartiles.png`
 - `resubmission_cohort_summary.csv`

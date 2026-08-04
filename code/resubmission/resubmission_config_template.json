@@ -1,0 +1,22 @@
+{
+  "site_name": "Your_Site_Name",
+  "repo": "/path/to/CLIF-ARFVI",
+  "tables_path": "/path/to/clif/tables",
+  "file_type": "csv/parquet/fst",
+  "time_zone": "US/Central",
+  "zcta_pm25_monthly_path": "/path/to/air_pollution_zcta_pm25_monthly_2005_2023.parquet",
+  "zcta_no2_monthly_dir": "/path/to/no2_zcta_monthly",
+  "zcta_no2_annual_path": "/path/to/air_pollution_zcta_no2_annual_2005_2025.parquet",
+  "zcta_acs_community_covariates_path": "/path/to/zcta_acs_community_covariates_2005_2023.csv.gz",
+  "output_dir": "output/resubmission",
+  "study_start": "2018-01-01",
+  "study_end": "2024-12-31",
+  "followup_days": 30,
+  "pm25_prior_months": 12,
+  "no2_prior_months": 12,
+  "no2_lag_years": 1,
+  "charlson_lookback_days": 365,
+  "charlson_include_index_diagnoses": true,
+  "imv_gap_hours": 6,
+  "successful_extubation_hours": 48
+}

@@ -24,6 +24,12 @@ library(fs)
 library(cowplot)
 
 # ---- Paths ----
+script_path <- tryCatch(normalizePath(sys.frame(1)$ofile, mustWork = TRUE), error = function(e) NA_character_)
+if (is.na(script_path)) {
+  cmd_file <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+  script_path <- if (length(cmd_file)) normalizePath(sub("^--file=", "", cmd_file[[1]]), mustWork = TRUE) else NA_character_
+}
+repo <- if (!is.na(script_path)) normalizePath(file.path(dirname(script_path), "..", "..", ".."), mustWork = FALSE) else normalizePath(getwd(), mustWork = TRUE)
 dir_in  <- "/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARFVI/sites/analysis"
 dir_out <- dir_in
 
@@ -1378,7 +1384,7 @@ for (pol in c("NO2","PM2.5")) {
 # ---------------------------------------------------------
 # 0) INPUTS
 # ---------------------------------------------------------
-exposome_dir <- "/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARFVI/exposome"
+exposome_dir <- file.path(repo, "exposome")
 
 # helper to pick the mean column robustly
 pick_mean_col <- function(df, hints) {

@@ -12,6 +12,14 @@ The goal is not to expand the analysis in every direction. It implements only th
 
 ## Main Script
 
+`00_setup_renv.R`
+
+Sites should restore the R package environment before running the analysis:
+
+```sh
+Rscript --vanilla code/resubmission/00_setup_renv.R
+```
+
 `00_run_full_resubmission_pipeline.R`
 
 This is the site-facing one-command runner. With no arguments, it first builds

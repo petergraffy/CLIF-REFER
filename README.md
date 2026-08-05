@@ -125,7 +125,11 @@ Follow instructions in the [config/README.md](config/README.md) file for detaile
 
 ## 2. Set up the project environment
 
-Initialize the R environment using the project `renv.lock` file.
+Initialize the R environment using the project `renv.lock` file:
+
+```sh
+Rscript --vanilla code/resubmission/00_setup_renv.R
+```
 
 The resubmission analysis uses bundled ZCTA-level air pollution and ACS files
 in `exposome/zcta/`. The older county-level ACS archive

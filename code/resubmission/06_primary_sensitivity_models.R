@@ -30,6 +30,11 @@ arg_or <- function(i, default = NA_character_) {
 input_path <- normalizePath(args[[1]], mustWork = TRUE)
 repo_guess <- normalizePath(file.path(dirname(input_path), "..", ".."), mustWork = FALSE)
 repo <- if (dir.exists(file.path(getwd(), "code", "resubmission"))) normalizePath(getwd(), mustWork = TRUE) else repo_guess
+resolve_repo_path <- function(path, default) {
+  path <- path %||% default
+  if (is.na(path) || !nzchar(path)) return(default)
+  if (grepl("^(/|[A-Za-z]:[/\\\\]|~)", path)) path else file.path(repo, path)
+}
 out_dir <- arg_or(2, file.path(repo, "output", "resubmission", format(Sys.time(), "%Y%m%d_%H%M%S")))
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
@@ -318,18 +323,18 @@ derive_36m_exposures <- function(df) {
     return(df)
   }
 
-  pm25_path <- Sys.getenv(
+  pm25_path <- resolve_repo_path(Sys.getenv(
     "REFER_ZCTA_PM25_MONTHLY_PATH",
     file.path(repo, "exposome", "zcta", "air_pollution_zcta_pm25_monthly_2005_2023.parquet")
-  )
-  no2_monthly_dir <- Sys.getenv(
+  ), file.path(repo, "exposome", "zcta", "air_pollution_zcta_pm25_monthly_2005_2023.parquet"))
+  no2_monthly_dir <- resolve_repo_path(Sys.getenv(
     "REFER_ZCTA_NO2_MONTHLY_DIR",
     file.path(repo, "exposome", "zcta", "no2_monthly")
-  )
-  no2_annual_path <- Sys.getenv(
+  ), file.path(repo, "exposome", "zcta", "no2_monthly"))
+  no2_annual_path <- resolve_repo_path(Sys.getenv(
     "REFER_ZCTA_NO2_ANNUAL_PATH",
     file.path(repo, "exposome", "zcta", "air_pollution_zcta_no2_annual_2005_2025.parquet")
-  )
+  ), file.path(repo, "exposome", "zcta", "air_pollution_zcta_no2_annual_2005_2025.parquet"))
 
   if (!file.exists(pm25_path) || !file.exists(no2_annual_path)) {
     warning("Required PM2.5/NO2 ZCTA files are absent; skipping 3-year exposure derivation.")

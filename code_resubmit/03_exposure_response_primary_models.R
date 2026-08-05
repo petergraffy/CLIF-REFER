@@ -17,6 +17,7 @@ suppressPackageStartupMessages({
   library(ggplot2)
   library(glue)
   library(janitor)
+  library(patchwork)
   library(readr)
   library(scales)
   library(splines)
@@ -75,7 +76,11 @@ analysis_df <- readr::read_csv(input_path, show_col_types = FALSE, progress = FA
     no2_per_10 = no2_per_10 %||% (no2_12m_zcta / 10),
     acs_median_household_income_10k = acs_median_household_income_10k %||% (acs_median_household_income / 10000),
     sex = factor(sex),
-    race_ethnicity = forcats::fct_lump_min(factor(race_ethnicity), min = 100, other_level = "Other/Unknown"),
+    race_ethnicity = forcats::fct_collapse(
+      factor(race_ethnicity),
+      "Other/Unknown" = c("Hispanic Other/Unknown", "Other/Unknown")
+    ),
+    race_ethnicity = forcats::fct_lump_min(race_ethnicity, min = 100, other_level = "Other/Unknown"),
     index_year_f = factor(index_year_f %||% index_year),
     arf_subtype = factor(arf_subtype, levels = c("Hypoxemic", "Hypercapnic", "Mixed"))
   ) %>%
@@ -117,6 +122,16 @@ outcome_specs <- tibble::tribble(
   ~outcome, ~endpoint, ~y_label,
   glue("Mortality by day {mortality_prediction_day}"), "mortality", glue("Predicted mortality probability by day {mortality_prediction_day}"),
   "Ventilator-free days", "vfd", "Predicted ventilator-free days"
+)
+
+outcome_colors <- setNames(
+  c("#2166AC", "#B2182B"),
+  c(glue("Predicted mortality probability by day {mortality_prediction_day}"), "Predicted ventilator-free days")
+)
+
+pollutant_x_labels <- list(
+  "NO2" = expression(NO[2]~"(ppb)"),
+  "PM2.5" = expression(PM[2.5]~"("*mu*"g/m"^3*")")
 )
 
 drop_uninformative_covars <- function(model_df, covars, exposure_terms) {
@@ -313,6 +328,7 @@ curve_colors <- c(
   "Hypercapnic" = "#009E73",
   "Mixed" = "#D55E00"
 )
+subtype_colors <- curve_colors[names(curve_colors) != "Overall"]
 
 theme_response <- function(base_size = 13) {
   theme_classic(base_size = base_size) +
@@ -320,39 +336,121 @@ theme_response <- function(base_size = 13) {
       plot.title = element_text(face = "bold"),
       strip.background = element_rect(fill = "grey92", color = "grey70"),
       strip.text = element_text(face = "bold"),
+      strip.text.y.left = element_text(face = "bold", size = 8.5, margin = margin(t = 8, r = 8, b = 8, l = 8)),
       strip.placement = "outside",
-      legend.position = "bottom"
+      legend.position = "bottom",
+      plot.margin = margin(5.5, 5.5, 5.5, 14)
     )
 }
 
-plot_curves <- function(curve_type_value, filename_stub) {
-  df <- prediction_df %>% filter(curve_type == curve_type_value)
-  rugs <- rug_df %>% filter(curve_type == curve_type_value)
+wrap_pollutant_panels <- function(plot_fun, heights = NULL) {
+  plots <- lapply(levels(prediction_df$pollutant), function(pollutant_value) plot_fun(pollutant_value))
+  patchwork::wrap_plots(plots, nrow = 1, guides = "collect") &
+    theme(legend.position = "bottom")
+}
 
-  p <- ggplot(df, aes(exposure_raw, estimate, color = arf_subtype, fill = arf_subtype)) +
-    geom_ribbon(aes(ymin = conf_low, ymax = conf_high), alpha = 0.14, color = NA, show.legend = FALSE) +
-    geom_line(linewidth = 1.05) +
-    geom_rug(
-      data = rugs,
-      aes(x = exposure_raw, color = factor(rug_group, levels = names(curve_colors))),
-      inherit.aes = FALSE,
-      sides = "b",
-      alpha = 0.12,
-      linewidth = 0.2,
-      show.legend = FALSE
-    ) +
-    facet_grid(y_label ~ pollutant_label, scales = "free", switch = "y", labeller = labeller(pollutant_label = label_parsed)) +
-    scale_color_manual(values = curve_colors, drop = TRUE) +
-    scale_fill_manual(values = curve_colors, drop = TRUE) +
-    scale_y_continuous(labels = label_number(accuracy = 0.01, trim = TRUE)) +
-    labs(
-      title = glue("Primary Exposure-Response Curves: {curve_type_value}"),
-      x = expression("Exposure concentration (NO"[2]*" ppb; PM"[2.5]*" "*mu*"g/m"^3*")"),
-      y = NULL,
-      color = NULL,
-      fill = NULL
-    ) +
-    theme_response()
+make_separate_rug_panel <- function(rugs, group_col, palette_values, pollutant_value) {
+  group_col <- rlang::ensym(group_col)
+  rugs <- rugs %>%
+    mutate(rug_level = factor(as.character(!!group_col), levels = names(palette_values))) %>%
+    filter(!is.na(rug_level))
+
+  ggplot(rugs, aes(x = exposure_raw, y = rug_level, color = rug_level)) +
+    geom_point(shape = "|", size = 1.8, alpha = 0.32, show.legend = FALSE) +
+    scale_color_manual(values = palette_values, drop = TRUE) +
+    scale_y_discrete(drop = FALSE) +
+    labs(x = pollutant_x_labels[[as.character(pollutant_value)]], y = NULL) +
+    theme_classic(base_size = 11) +
+    theme(
+      axis.text.y = element_text(size = 9),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.ticks.y = element_blank(),
+      axis.title.x = element_text(size = 13),
+      plot.margin = margin(0, 5.5, 5.5, 5.5),
+      legend.position = "none"
+    )
+}
+
+apply_outcome_y_windows <- function(df) {
+  df %>%
+    mutate(
+      y_window_low = if_else(endpoint == "mortality", 0, 15),
+      y_window_high = if_else(endpoint == "mortality", 0.40, 28),
+      estimate_plot = pmin(pmax(estimate, y_window_low), y_window_high),
+      conf_low_plot = pmin(pmax(conf_low, y_window_low), y_window_high),
+      conf_high_plot = pmin(pmax(conf_high, y_window_low), y_window_high)
+    )
+}
+
+make_y_window_df <- function(plot_df) {
+  plot_df %>%
+    distinct(y_label, endpoint) %>%
+    mutate(
+      exposure_raw = min(plot_df$exposure_raw, na.rm = TRUE),
+      y_window_low = if_else(endpoint == "mortality", 0, 15),
+      y_window_high = if_else(endpoint == "mortality", 0.40, 28)
+    ) %>%
+    pivot_longer(c(y_window_low, y_window_high), names_to = "window_bound", values_to = "y_value")
+}
+
+label_outcome_axis <- function(x) {
+  if_else(
+    abs(x) >= 1,
+    label_number(accuracy = 1, trim = TRUE)(x),
+    label_number(accuracy = 0.01, trim = TRUE)(x)
+  )
+}
+
+plot_curves <- function(curve_type_value, filename_stub) {
+  df <- prediction_df %>%
+    filter(curve_type == curve_type_value) %>%
+    apply_outcome_y_windows()
+  rugs <- rug_df %>% filter(curve_type == curve_type_value)
+  is_overall <- identical(curve_type_value, "Whole cohort")
+  palette_values <- if (is_overall) outcome_colors else subtype_colors
+  df <- df %>%
+    mutate(curve_group = if (is_overall) as.character(y_label) else as.character(arf_subtype))
+  rugs <- rugs %>%
+    mutate(rug_group = if (is_overall) as.character(y_label) else as.character(rug_group))
+
+  p <- wrap_pollutant_panels(function(pollutant_value) {
+    plot_df <- df %>% filter(pollutant == pollutant_value)
+    plot_rugs <- rugs %>% filter(pollutant == pollutant_value)
+
+    curve_plot <- ggplot(plot_df, aes(exposure_raw, estimate_plot, color = curve_group, fill = curve_group)) +
+      geom_blank(data = make_y_window_df(plot_df), aes(x = exposure_raw, y = y_value), inherit.aes = FALSE) +
+      geom_ribbon(aes(ymin = conf_low_plot, ymax = conf_high_plot), alpha = 0.14, color = NA, show.legend = FALSE) +
+      geom_line(linewidth = 1.05) +
+      facet_grid(y_label ~ ., scales = "free_y", switch = "y") +
+      scale_color_manual(values = palette_values, drop = TRUE) +
+      scale_fill_manual(values = palette_values, drop = TRUE) +
+      scale_y_continuous(labels = label_outcome_axis, expand = expansion(mult = c(0, 0))) +
+      labs(
+        title = rlang::parse_expr(as.character(plot_df$pollutant_label[[1]])),
+        x = if (is_overall) pollutant_x_labels[[as.character(pollutant_value)]] else NULL,
+        y = NULL,
+        color = NULL,
+        fill = NULL
+      ) +
+      theme_response()
+
+    if (is_overall) {
+      curve_plot +
+        geom_rug(
+          data = plot_rugs,
+          aes(x = exposure_raw, color = factor(rug_group, levels = names(palette_values))),
+          inherit.aes = FALSE,
+          sides = "b",
+          alpha = 0.16,
+          linewidth = 0.24,
+          show.legend = FALSE
+        )
+    } else {
+      curve_plot / make_separate_rug_panel(plot_rugs, rug_group, palette_values, pollutant_value) +
+        plot_layout(heights = c(1, 0.18))
+    }
+  })
 
   ggsave(file.path(fig_dir, paste0(filename_stub, ".png")), p, width = 12.5, height = 8.5, dpi = 300)
   ggsave(file.path(fig_dir, paste0(filename_stub, ".pdf")), p, width = 12.5, height = 8.5)
@@ -364,34 +462,33 @@ p_subtype <- plot_curves("By ARF subtype", "primary_exposure_response_predicted_
 
 plot_subtype_mortality_only <- function() {
   df <- prediction_df %>%
-    filter(curve_type == "By ARF subtype", endpoint == "mortality")
+    filter(curve_type == "By ARF subtype", endpoint == "mortality") %>%
+    apply_outcome_y_windows()
   rugs <- rug_df %>%
     filter(curve_type == "By ARF subtype", outcome == glue("Mortality by day {mortality_prediction_day}"))
 
-  p <- ggplot(df, aes(exposure_raw, estimate, color = arf_subtype, fill = arf_subtype)) +
-    geom_ribbon(aes(ymin = conf_low, ymax = conf_high), alpha = 0.14, color = NA, show.legend = FALSE) +
-    geom_line(linewidth = 1.05) +
-    geom_rug(
-      data = rugs,
-      aes(x = exposure_raw, color = factor(rug_group, levels = names(curve_colors))),
-      inherit.aes = FALSE,
-      sides = "b",
-      alpha = 0.12,
-      linewidth = 0.2,
-      show.legend = FALSE
-    ) +
-    facet_grid(. ~ pollutant_label, scales = "free_x", labeller = labeller(pollutant_label = label_parsed)) +
-    scale_color_manual(values = curve_colors, drop = TRUE) +
-    scale_fill_manual(values = curve_colors, drop = TRUE) +
-    scale_y_continuous(labels = label_percent(accuracy = 1), limits = c(0, NA)) +
-    labs(
-      title = "Predicted Day-28 Mortality by ARF Subtype",
-      x = expression("Exposure concentration (NO"[2]*" ppb; PM"[2.5]*" "*mu*"g/m"^3*")"),
-      y = glue("Predicted mortality probability by day {mortality_prediction_day}"),
-      color = NULL,
-      fill = NULL
-    ) +
-    theme_response()
+  p <- wrap_pollutant_panels(function(pollutant_value) {
+    plot_df <- df %>% filter(pollutant == pollutant_value)
+    plot_rugs <- rugs %>% filter(pollutant == pollutant_value)
+
+    curve_plot <- ggplot(plot_df, aes(exposure_raw, estimate_plot, color = arf_subtype, fill = arf_subtype)) +
+      geom_ribbon(aes(ymin = conf_low_plot, ymax = conf_high_plot), alpha = 0.14, color = NA, show.legend = FALSE) +
+      geom_line(linewidth = 1.05) +
+      scale_color_manual(values = subtype_colors, drop = TRUE) +
+      scale_fill_manual(values = subtype_colors, drop = TRUE) +
+      scale_y_continuous(labels = label_percent(accuracy = 1), limits = c(0, 0.40), expand = expansion(mult = c(0, 0))) +
+      labs(
+        title = rlang::parse_expr(as.character(plot_df$pollutant_label[[1]])),
+        x = NULL,
+        y = glue("Predicted mortality probability by day {mortality_prediction_day}"),
+        color = NULL,
+        fill = NULL
+      ) +
+      theme_response()
+
+    curve_plot / make_separate_rug_panel(plot_rugs, rug_group, subtype_colors, pollutant_value) +
+      plot_layout(heights = c(1, 0.22))
+  })
 
   ggsave(
     file.path(fig_dir, "primary_mortality_day28_logistic_exposure_response_by_arf_subtype.png"),
@@ -622,76 +719,78 @@ make_group_rug_df <- function(group_var) {
 plot_group_combined_curves <- function(group_var, group_label, filename_stub, palette_values) {
   df <- group_predictions %>%
     filter(.data$group_var == !!group_var) %>%
+    apply_outcome_y_windows() %>%
     mutate(group_level = factor(group_level, levels = names(palette_values)))
   rugs <- make_group_rug_df(group_var) %>%
     mutate(group_level = factor(group_level, levels = names(palette_values)))
   ribbon_alpha <- if (length(palette_values) > 3) 0.06 else 0.14
 
-  p <- ggplot(df, aes(exposure_raw, estimate, color = group_level, fill = group_level)) +
-    geom_ribbon(aes(ymin = conf_low, ymax = conf_high), alpha = ribbon_alpha, color = NA, show.legend = FALSE) +
-    geom_line(linewidth = 1.05) +
-    geom_rug(
-      data = rugs,
-      aes(x = exposure_raw, color = group_level),
-      inherit.aes = FALSE,
-      sides = "b",
-      alpha = 0.12,
-      linewidth = 0.2,
-      show.legend = FALSE
-    ) +
-    facet_grid(y_label ~ pollutant_label, scales = "free", switch = "y", labeller = labeller(pollutant_label = label_parsed)) +
-    scale_color_manual(values = palette_values, drop = TRUE) +
-    scale_fill_manual(values = palette_values, drop = TRUE) +
-    scale_y_continuous(labels = label_number(accuracy = 0.01, trim = TRUE)) +
-    labs(
-      title = glue("Primary Exposure-Response Curves: {group_label}"),
-      x = expression("Exposure concentration (NO"[2]*" ppb; PM"[2.5]*" "*mu*"g/m"^3*")"),
-      y = NULL,
-      color = NULL,
-      fill = NULL
-    ) +
-    theme_response()
+  p <- wrap_pollutant_panels(function(pollutant_value) {
+    plot_df <- df %>% filter(pollutant == pollutant_value)
+    plot_rugs <- rugs %>% filter(pollutant == pollutant_value)
 
-  ggsave(file.path(fig_dir, paste0(filename_stub, ".png")), p, width = 12.5, height = 8.5, dpi = 300)
-  ggsave(file.path(fig_dir, paste0(filename_stub, ".pdf")), p, width = 12.5, height = 8.5)
+    curve_plot <- ggplot(plot_df, aes(exposure_raw, estimate_plot, color = group_level, fill = group_level)) +
+      geom_blank(data = make_y_window_df(plot_df), aes(x = exposure_raw, y = y_value), inherit.aes = FALSE) +
+      geom_ribbon(aes(ymin = conf_low_plot, ymax = conf_high_plot), alpha = ribbon_alpha, color = NA, show.legend = FALSE) +
+      geom_line(linewidth = 1.05) +
+      facet_grid(y_label ~ ., scales = "free_y", switch = "y") +
+      scale_color_manual(values = palette_values, drop = TRUE) +
+      scale_fill_manual(values = palette_values, drop = TRUE) +
+      scale_y_continuous(labels = label_outcome_axis, expand = expansion(mult = c(0, 0))) +
+      labs(
+        title = rlang::parse_expr(as.character(plot_df$pollutant_label[[1]])),
+        x = NULL,
+        y = NULL,
+        color = NULL,
+        fill = NULL
+      ) +
+      theme_response()
+
+    curve_plot / make_separate_rug_panel(plot_rugs, group_level, palette_values, pollutant_value) +
+      plot_layout(heights = c(1, 0.18))
+  })
+
+  plot_width <- if (identical(group_var, "race_ethnicity")) 16 else 12.5
+  ggsave(file.path(fig_dir, paste0(filename_stub, ".png")), p, width = plot_width, height = 8.5, dpi = 300)
+  ggsave(file.path(fig_dir, paste0(filename_stub, ".pdf")), p, width = plot_width, height = 8.5)
   p
 }
 
 plot_mortality_group_curves <- function(group_var, group_label, filename_stub, palette_values) {
   df <- mortality_group_predictions %>%
     filter(.data$group_var == !!group_var) %>%
+    apply_outcome_y_windows() %>%
     mutate(group_level = factor(group_level, levels = names(palette_values)))
   rugs <- make_group_rug_df(group_var) %>%
     mutate(group_level = factor(group_level, levels = names(palette_values)))
   ribbon_alpha <- if (length(palette_values) > 3) 0.06 else 0.14
 
-  p <- ggplot(df, aes(exposure_raw, estimate, color = group_level, fill = group_level)) +
-    geom_ribbon(aes(ymin = conf_low, ymax = conf_high), alpha = ribbon_alpha, color = NA, show.legend = FALSE) +
-    geom_line(linewidth = 1.05) +
-    geom_rug(
-      data = rugs,
-      aes(x = exposure_raw, color = group_level),
-      inherit.aes = FALSE,
-      sides = "b",
-      alpha = 0.12,
-      linewidth = 0.2,
-      show.legend = FALSE
-    ) +
-    facet_grid(. ~ pollutant_label, scales = "free_x", labeller = labeller(pollutant_label = label_parsed)) +
-    scale_color_manual(values = palette_values, drop = TRUE) +
-    scale_fill_manual(values = palette_values, drop = TRUE) +
-    scale_y_continuous(labels = label_percent(accuracy = 1), limits = c(0, NA)) +
-    labs(
-      title = glue("Predicted Mortality Curves: {group_label}"),
-      x = expression("Exposure concentration (NO"[2]*" ppb; PM"[2.5]*" "*mu*"g/m"^3*")"),
-      y = glue("Predicted mortality probability by day {mortality_prediction_day}"),
-      color = NULL,
-      fill = NULL
-    ) +
-    theme_response()
+  p <- wrap_pollutant_panels(function(pollutant_value) {
+    plot_df <- df %>% filter(pollutant == pollutant_value)
+    plot_rugs <- rugs %>% filter(pollutant == pollutant_value)
 
-  ggsave(file.path(fig_dir, paste0(filename_stub, ".png")), p, width = 12.5, height = 5.5, dpi = 300)
-  ggsave(file.path(fig_dir, paste0(filename_stub, ".pdf")), p, width = 12.5, height = 5.5)
+    curve_plot <- ggplot(plot_df, aes(exposure_raw, estimate_plot, color = group_level, fill = group_level)) +
+      geom_ribbon(aes(ymin = conf_low_plot, ymax = conf_high_plot), alpha = ribbon_alpha, color = NA, show.legend = FALSE) +
+      geom_line(linewidth = 1.05) +
+      scale_color_manual(values = palette_values, drop = TRUE) +
+      scale_fill_manual(values = palette_values, drop = TRUE) +
+      scale_y_continuous(labels = label_percent(accuracy = 1), limits = c(0, 0.40), expand = expansion(mult = c(0, 0))) +
+      labs(
+        title = rlang::parse_expr(as.character(plot_df$pollutant_label[[1]])),
+        x = NULL,
+        y = glue("Predicted mortality probability by day {mortality_prediction_day}"),
+        color = NULL,
+        fill = NULL
+      ) +
+      theme_response()
+
+    curve_plot / make_separate_rug_panel(plot_rugs, group_level, palette_values, pollutant_value) +
+      plot_layout(heights = c(1, 0.22))
+  })
+
+  plot_width <- if (identical(group_var, "race_ethnicity")) 16 else 12.5
+  ggsave(file.path(fig_dir, paste0(filename_stub, ".png")), p, width = plot_width, height = 5.5, dpi = 300)
+  ggsave(file.path(fig_dir, paste0(filename_stub, ".pdf")), p, width = plot_width, height = 5.5)
   p
 }
 

@@ -274,9 +274,7 @@ row_plots <- lapply(seq_along(state_levels), function(i) {
 p_cif <- (header_row / wrap_plots(row_plots, ncol = 1)) +
   plot_layout(heights = c(0.075, 3), guides = "collect") +
   plot_annotation(
-    title = "Aalen-Johansen Cumulative Incidence by Exposure Quartile",
     theme = theme(
-      plot.title = element_text(face = "bold", size = 30, hjust = 0.02, margin = margin(b = 8)),
       legend.position = "bottom",
       legend.text = element_text(size = 19),
       plot.margin = margin(8, 14, 8, 14)

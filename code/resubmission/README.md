@@ -48,11 +48,17 @@ Sites should receive these files in `exposome/zcta/`:
 - `air_pollution_zcta_o3_monthly_2005_2023.parquet`
 - `air_pollution_zcta_no2_annual_2005_2025.parquet`
 - `zcta_acs_community_covariates_2005_2023.csv.gz`
+- `zcta_acs_community_covariates_dictionary.csv`
+- `zcta_acs_community_covariates_qc.csv`
 - `no2_monthly/no2_zcta_monthly_2019.parquet` through `no2_monthly/no2_zcta_monthly_2025.parquet`
 
 If a site needs to override these paths, copy
 `resubmission_config_template.json` to `resubmission_config.json` and edit the
 corresponding `zcta_*` fields.
+
+The ACS file is pre-downloaded and analysis-ready. It includes the ZCTA-level
+social covariates used in the models, so sites do not need Census API access to
+run the resubmission analysis.
 
 `01_primary_reviewer_optimized_models.R`
 

@@ -1,0 +1,14 @@
+column,description,source_or_definition
+zip,Five-digit ZIP Code Tabulation Area,ACS ZCTA geography
+analysis_year,Year used for linkage to patient ARF onset year,2005-2023
+community_year,ACS 5-year estimate year used for the row,"Available ACS ZCTA years are 2012-2023; earlier analysis years use the earliest available ZCTA ACS estimate"
+total_population,Total ZCTA population,ACS total population estimate
+median_household_income,Median household income in US dollars,ACS B19013_001E
+pct_poverty,Proportion below poverty,B17001_002E / B17001_001E
+pct_bachelor_plus,Proportion age 25+ with bachelor's degree or higher,"(B15003_022E + B15003_023E + B15003_024E + B15003_025E) / B15003_001E"
+pct_unemployed,Unemployed proportion among civilian labor force,B23025_005E / B23025_003E
+pct_no_vehicle,Households without vehicle access,B08201_002E / B08201_001E
+pct_nonwhite,Proportion not White alone,1 - (B02001_002E / B02001_001E)
+pct_black,Proportion Black alone,B02001_003E / B02001_001E
+pct_asian,Proportion Asian alone,B02001_005E / B02001_001E
+pct_hispanic,Proportion Hispanic/Latino,B03003_003E / B03003_001E

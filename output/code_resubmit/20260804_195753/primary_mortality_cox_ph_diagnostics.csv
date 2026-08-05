@@ -1,0 +1,41 @@
+site,outcome,model,term,chisq,p_value,term_type
+UCMC,In-hospital mortality after ARF onset,PM25 single-pollutant,pm25_per_5,0.0037340970950692446,0.951273788159146,exposure
+UCMC,In-hospital mortality after ARF onset,PM25 single-pollutant,age_10,12.63118839699005,3.793639301744707e-4,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 single-pollutant,sex,4.743789769502085,0.02940422907551512,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 single-pollutant,race_ethnicity,25.77545921132687,9.864300561523482e-5,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 single-pollutant,charlson_score,1.1124805676643306,0.2915433631805048,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 single-pollutant,index_year_f,96.35956590360526,3.0895606505629835e-19,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 single-pollutant,acs_pct_poverty,19.466878354641626,1.0235930545755386e-5,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 single-pollutant,acs_pct_unemployed,25.0198322915639,5.674364355371365e-7,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 single-pollutant,acs_pct_no_vehicle,18.613131537622444,1.6011385208485626e-5,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 single-pollutant,acs_pct_nonwhite,9.307326764528527,0.0022823925892986995,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 single-pollutant,acs_median_household_income_10k,24.025711822771722,9.505779497643492e-7,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 single-pollutant,acs_pct_bachelor_plus,3.420410183968819,0.06439501124138043,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 single-pollutant,GLOBAL,154.97764726496092,6.970004562085232e-23,global
+UCMC,In-hospital mortality after ARF onset,NO2 single-pollutant,no2_per_10,61.12829403662453,5.347408916827445e-15,exposure
+UCMC,In-hospital mortality after ARF onset,NO2 single-pollutant,age_10,12.114154682176709,5.004051736217677e-4,covariate
+UCMC,In-hospital mortality after ARF onset,NO2 single-pollutant,sex,4.821394070803917,0.028108602739429514,covariate
+UCMC,In-hospital mortality after ARF onset,NO2 single-pollutant,race_ethnicity,25.845603651156832,9.560345780453628e-5,covariate
+UCMC,In-hospital mortality after ARF onset,NO2 single-pollutant,charlson_score,1.1347332484868393,0.2867679757134395,covariate
+UCMC,In-hospital mortality after ARF onset,NO2 single-pollutant,index_year_f,95.65380038422721,4.349722454861873e-19,covariate
+UCMC,In-hospital mortality after ARF onset,NO2 single-pollutant,acs_pct_poverty,19.87873723868019,8.251296604953756e-6,covariate
+UCMC,In-hospital mortality after ARF onset,NO2 single-pollutant,acs_pct_unemployed,25.948385789697312,3.5066853562615014e-7,covariate
+UCMC,In-hospital mortality after ARF onset,NO2 single-pollutant,acs_pct_no_vehicle,19.18930627110194,1.1837466841748786e-5,covariate
+UCMC,In-hospital mortality after ARF onset,NO2 single-pollutant,acs_pct_nonwhite,9.829297102785999,0.001717539712823387,covariate
+UCMC,In-hospital mortality after ARF onset,NO2 single-pollutant,acs_median_household_income_10k,24.10160603153623,9.138404931504771e-7,covariate
+UCMC,In-hospital mortality after ARF onset,NO2 single-pollutant,acs_pct_bachelor_plus,3.417929032455621,0.06449187020852415,covariate
+UCMC,In-hospital mortality after ARF onset,NO2 single-pollutant,GLOBAL,154.95274872622983,7.047264694444519e-23,global
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,pm25_per_5,8.061223785256023e-4,0.9773492699423442,exposure
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,no2_per_10,61.384221292776886,4.6955851206802556e-15,exposure
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,age_10,12.47083472284117,4.1335533806478983e-4,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,sex,4.802705613302776,0.02841507950770225,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,race_ethnicity,25.845996602104858,9.558669417954081e-5,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,charlson_score,1.1695995825200778,0.27948353078732274,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,index_year_f,96.45026702764194,2.956661091046455e-19,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,acs_pct_poverty,19.725065849721435,8.9420766457666565e-06,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,acs_pct_unemployed,25.539981219614383,4.3331018467508784e-7,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,acs_pct_no_vehicle,18.949016528671915,1.3425846931312192e-5,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,acs_pct_nonwhite,9.591054809587563,0.0019552758764783936,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,acs_median_household_income_10k,24.159848969003857,8.866157415009453e-7,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,acs_pct_bachelor_plus,3.4365529530372405,0.06376860793058829,covariate
+UCMC,In-hospital mortality after ARF onset,PM25 + NO2,GLOBAL,156.19738140432085,1.1572529025779345e-22,global

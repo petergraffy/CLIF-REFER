@@ -263,18 +263,22 @@ vitals_dttm <- vitals %>%
     .groups = "drop"
   )
 
-# Hospital LOS (use vitals only; keep the name hosp_los)
+# Hospital LOS should come from hospitalization timestamps. Keep vital coverage
+# separately as a QA measure because vital-record span is not the same estimand.
 hosp_los <- cohort_all %>%
-  dplyr::select(hospitalization_id) %>%
+  dplyr::select(hospitalization_id, index_admit, index_discharge) %>%
   left_join(vitals_dttm, by = "hospitalization_id") %>%
   mutate(
-    hosp_los_days = as.numeric(difftime(last_vital_dttm, first_vital_dttm, units = "days")),
-    hosp_los_days = ifelse(is.finite(hosp_los_days), pmax(hosp_los_days, 0), NA_real_)
+    hosp_los_days = as.numeric(difftime(index_discharge, index_admit, units = "days")),
+    hosp_los_days = ifelse(is.finite(hosp_los_days), pmax(hosp_los_days, 0), NA_real_),
+    vital_coverage_days = as.numeric(difftime(last_vital_dttm, first_vital_dttm, units = "days")),
+    vital_coverage_days = ifelse(is.finite(vital_coverage_days), pmax(vital_coverage_days, 0), NA_real_)
   ) %>%
   left_join(
     hospitalization %>% dplyr::select(hospitalization_id, discharge_category, county_code),
     by = "hospitalization_id"
-  )
+  ) %>%
+  dplyr::select(-index_admit, -index_discharge)
 
 # --- final_outcome_times ---
 final_outcome_times <- hospitalization %>%
@@ -300,7 +304,7 @@ mortality_instay <- cohort_all |>
   mutate(
     death_ts      = safe_ts(death_dttm_final),
     in_hosp_death = as.integer(!is.na(death_ts) & death_ts >= index_admit & death_ts <= index_discharge),
-    death_30d     = as.integer(!is.na(death_ts) & death_ts <= (index_admit + days(30)))
+    death_30d     = as.integer(!is.na(death_ts) & death_ts >= index_admit & death_ts <= (index_admit + days(30)))
   ) |>
   dplyr::select(hospitalization_id, in_hosp_death, death_30d)
 
@@ -406,15 +410,12 @@ sofa_scores <- calculate_sofa(
 
 outcomes <- outcomes |>
   left_join(sofa_scores |>
-              dplyr::select(hospitalization_id,
+                     dplyr::select(hospitalization_id,
                      sofa_total,
                      sofa_cv, sofa_coag, sofa_liver,
                      sofa_renal, sofa_resp, sofa_cns),
             by = "hospitalization_id") |>
-  mutate(
-    # Set NA SOFA scores to 0 (assuming no organ dysfunction if data missing)
-    across(starts_with("sofa_"), ~ coalesce(., 0))
-  )
+  mutate(sofa_missing = if_any(starts_with("sofa_"), is.na))
 
 cat("\nSOFA Score Summary:\n")
 sofa_summary <- outcomes |>
@@ -821,8 +822,19 @@ theme_pub <- theme_minimal(base_size = 13) +
 
 pal <- scale_color_brewer(palette = "Dark2")
 fill_pal <- scale_fill_brewer(palette = "Dark2")
+rug_no2_subtype <- arf_exp %>%
+  dplyr::filter(!is.na(no2_10), !is.na(arf_subtype)) %>%
+  dplyr::select(no2_10, arf_subtype)
 
 p1s <- ggplot(df_mort_inhosp_sub, aes(no2_10, pred, color = arf_subtype, fill = arf_subtype)) +
+  geom_rug(
+    data = rug_no2_subtype,
+    aes(x = no2_10, color = arf_subtype),
+    inherit.aes = FALSE,
+    sides = "b",
+    alpha = 0.18,
+    linewidth = 0.25
+  ) +
   geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.2, color = NA) +
   geom_line(size = 1.2) + pal + fill_pal +
   labs(title = "In-hospital mortality vs NO2 by ARF subtype",
@@ -832,6 +844,14 @@ p1s <- ggplot(df_mort_inhosp_sub, aes(no2_10, pred, color = arf_subtype, fill = 
                         ref_sex, "/", ref_re)) + theme_pub
 
 p2s <- ggplot(df_mort_30d_sub, aes(no2_10, pred, color = arf_subtype, fill = arf_subtype)) +
+  geom_rug(
+    data = rug_no2_subtype,
+    aes(x = no2_10, color = arf_subtype),
+    inherit.aes = FALSE,
+    sides = "b",
+    alpha = 0.18,
+    linewidth = 0.25
+  ) +
   geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.2, color = NA) +
   geom_line(size = 1.2) + pal + fill_pal +
   labs(title = "30-day mortality vs NO2 by ARF subtype",
@@ -841,6 +861,14 @@ p2s <- ggplot(df_mort_30d_sub, aes(no2_10, pred, color = arf_subtype, fill = arf
                         ref_sex, "/", ref_re)) + theme_pub
 
 p3s <- ggplot(df_vent_sub, aes(no2_10, pred, color = arf_subtype, fill = arf_subtype)) +
+  geom_rug(
+    data = rug_no2_subtype,
+    aes(x = no2_10, color = arf_subtype),
+    inherit.aes = FALSE,
+    sides = "b",
+    alpha = 0.18,
+    linewidth = 0.25
+  ) +
   geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.2, color = NA) +
   geom_line(size = 1.2) + pal + fill_pal +
   labs(title = "Ventilation hours vs NO2 by ARF subtype",
@@ -1096,6 +1124,7 @@ tbl1_vars <- list(
     svi_overall      = "SVI (overall)",
     icu_los_days     = "ICU length of stay (days)",
     hosp_los_days    = "Hospital length of stay (days)",
+    vital_coverage_days = "Vital-sign coverage span (days)",
     vent_hours       = "Invasive ventilation (hours)",
     # Add SOFA scores
     sofa_total       = "SOFA total score"
@@ -4814,5 +4843,3 @@ message("\n🎯 Cohort identification, linkage, and analyses complete!")
 message("📂 All outputs saved under: ", normalizePath(cfg$output_dir))
 message("   Figures: ", normalizePath(cfg$figures_path))
 message("🔒 Reminder: Remove any local CSVs with patient-level data outside the repo, and upload the 'output' folder to Box.\n")
-
-

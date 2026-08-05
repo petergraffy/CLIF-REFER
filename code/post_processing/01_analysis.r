@@ -71,8 +71,9 @@ readr::write_csv(by_total, file.path(dir_out, "arf_counts_by_county_total.csv"))
 
 # ---- Build county map (CONUS + DC) and join ----
 options(tigris_use_cache = TRUE)
+drop_states <- c("02","15","72","60","66","69","78") # AK, HI, PR, territories
 us_counties <- counties(cb = TRUE, year = 2020, class = "sf") |>
-  filter(!STATEFP %in% c("02","15","72"))  # drop AK, HI, PR (keep DC)
+  filter(!STATEFP %in% drop_states)  # keep CONUS + DC
 
 map_df <- us_counties |>
   rename(fips = GEOID) |>
@@ -89,32 +90,38 @@ map_df_conus <- map_df |>
 
 # us48 counties (no AK/HI/PR), in lon/lat for coord_sf limits
 us48_ll <- counties(cb = TRUE, year = 2020, class = "sf") %>%
-  filter(!STATEFP %in% c("02","15","72")) %>%
-  rename(fips = GEOID) %>%
-  st_transform(4326)
+  filter(!STATEFP %in% drop_states) %>%
+  rename(fips = GEOID)
 
 # join totals
 map_ll <- us48_ll %>% left_join(by_total, by = "fips")
 
 # bins
-pos_breaks <- c(1,5,10,25,50,100,250,500,1000,2500,5000,10000, Inf)
-pos_labels <- c("1–5","6–10","11–25","26–50","51–100","101–250",
-                "251–500","501–1k","1k–2.5k","2.5k–5k","5k–10k",">10k")
+min_count_to_show <- 10
+pos_breaks <- c(10,25,50,100,250,500,1000,2500,5000,10000, Inf)
+pos_labels <- c("10-25","26-50","51-100","101-250",
+                "251-500","501-1k","1k-2.5k","2.5k-5k","5k-10k",">10k")
 
 map_ll <- map_ll %>%
   mutate(
     arf_zero = !is.na(arf_total) & arf_total == 0,
-    arf_bin  = cut(arf_total, breaks = pos_breaks, labels = pos_labels,
+    arf_suppressed = !is.na(arf_total) & arf_total > 0 & arf_total < min_count_to_show,
+    arf_display = if_else(arf_suppressed, NA_real_, arf_total),
+    arf_bin  = cut(arf_display, breaks = pos_breaks, labels = pos_labels,
                    include.lowest = TRUE, right = TRUE),
     arf_cat  = case_when(
-      arf_zero        ~ "0 (No ARF)",
+      arf_zero       ~ "0 (No ARF)",
+      arf_suppressed ~ "<10",
       !is.na(arf_bin) ~ as.character(arf_bin),
-      TRUE            ~ NA_character_
+      TRUE           ~ NA_character_
     ),
-    arf_cat = factor(arf_cat, levels = c("0 (No ARF)", pos_labels))
+    arf_cat = factor(arf_cat, levels = c("0 (No ARF)", "<10", pos_labels))
   )
 
-pal <- c("#e6e6e6", viridis(length(pos_labels)))
+stopifnot(!any(map_ll$arf_suppressed & !is.na(map_ll$arf_display)))
+
+count_pal <- viridis(length(pos_labels))
+pal <- c("#e6e6e6", "#24002f", count_pal)
 
 p_arf <- ggplot(map_ll) +
   geom_sf(aes(fill = arf_cat), color = "white", linewidth = 0.05) +
@@ -129,8 +136,7 @@ p_arf <- ggplot(map_ll) +
     xlim = c(-125, -66.5), ylim = c(24, 49), expand = FALSE
   ) +
   labs(
-    title = "Total Acute Respiratory Failure Cases by U.S. County",
-    subtitle = "Aggregated across all sites for the full study period (2018-2024)"
+    title = "Total Acute Respiratory Failure Cases by U.S. County"
   ) +
   theme_void(base_size = 12) +
   theme(
@@ -145,7 +151,7 @@ p_arf
 
 ggsave(
   filename = file.path(dir_out, "arf_counts_total_by_county_map_gg.png"),
-  plot = p_arf, width = 14, height = 9, dpi = 300
+  plot = p_arf, width = 14, height = 9, dpi = 300, bg = "white"
 )
 
 sum(by_total$arf_total)
@@ -3080,7 +3086,7 @@ p_no2
  #   no2_10, pred, lo, hi, and the group variable
  # If not, adjust below accordingly.
  
- prep_ribbon_df <- function(df, group_var, group_clean_fn = NULL, levels = NULL) {
+prep_ribbon_df <- function(df, group_var, group_clean_fn = NULL, levels = NULL) {
    group_var <- rlang::ensym(group_var)
    group_nm  <- rlang::as_name(group_var)
    
@@ -4632,13 +4638,37 @@ p_no2
      out[[group_nm]] <- factor(out[[group_nm]], levels = levels)
    }
    
-   out
- }
- 
- plot_ribbon_pub <- function(df, group_var, title_expr, ylab, palette = NULL) {
-   group_var <- rlang::ensym(group_var)
-   
-   p <- ggplot(
+  out
+}
+
+prep_rug_df <- function(files, group_var, group_clean_fn = NULL, levels = NULL) {
+  group_var <- rlang::ensym(group_var)
+  group_nm  <- rlang::as_name(group_var)
+  
+  out <- purrr::map_dfr(files, function(f) {
+    readr::read_csv(f, show_col_types = FALSE) %>%
+      dplyr::mutate(site_file = basename(f))
+  }) %>%
+    dplyr::mutate(no2_10 = as.numeric(.data$no2_10)) %>%
+    dplyr::filter(is.finite(no2_10), !is.na(.data[[group_nm]]))
+  
+  if (!is.null(group_clean_fn)) {
+    out[[group_nm]] <- group_clean_fn(out[[group_nm]])
+  }
+  
+  if (!is.null(levels)) {
+    out[[group_nm]] <- factor(out[[group_nm]], levels = levels)
+  }
+  
+  out %>%
+    dplyr::distinct(site_file, no2_10, .data[[group_nm]])
+}
+
+plot_ribbon_pub <- function(df, group_var, title_expr, ylab, palette = NULL, rug_df = NULL) {
+  group_var <- rlang::ensym(group_var)
+  group_nm  <- rlang::as_name(group_var)
+  
+  p <- ggplot(
      df,
      aes(
        x = no2_10,
@@ -4664,6 +4694,31 @@ p_no2
        legend.position  = "right",
        legend.key.width = unit(0.9, "lines")
      )
+  
+  if (!is.null(rug_df) && nrow(rug_df) > 0) {
+    y_rng <- range(c(df$pred, df$lo, df$hi), na.rm = TRUE, finite = TRUE)
+    y_span <- diff(y_rng)
+    if (!is.finite(y_span) || y_span <= 0) y_span <- max(abs(y_rng), 1, na.rm = TRUE)
+    rug_levels <- levels(df[[group_nm]])
+    if (is.null(rug_levels)) rug_levels <- unique(as.character(df[[group_nm]]))
+    
+    rug_marks <- rug_df %>%
+      dplyr::mutate(
+        rug_row = match(as.character(.data[[group_nm]]), rug_levels),
+        rug_y = y_rng[1] + y_span * (0.018 + 0.022 * (rug_row - 1)),
+        rug_yend = rug_y + y_span * 0.018
+      ) %>%
+      dplyr::filter(!is.na(rug_row))
+    
+    p <- p +
+      geom_segment(
+        data = rug_marks,
+        aes(x = no2_10, xend = no2_10, y = rug_y, yend = rug_yend, color = !!group_var),
+        inherit.aes = FALSE,
+        alpha = 0.45,
+        linewidth = 0.35
+      )
+  }
    
    if (!is.null(palette)) {
      p <- p +
@@ -4726,22 +4781,30 @@ p_no2
      link      = link
    )
    
-   pooled <- prep_ribbon_df(
-     pooled_raw,
-     group_var = arf_subtype,
-     group_clean_fn = clean_subtype,
-     levels = subtype_levels
-   )
-   
-   title_expr <- as.expression(bquote(.(t_stub) * NO[2] * ""))
-   
-   p <- plot_ribbon_pub(
-     pooled,
-     group_var  = arf_subtype,
-     title_expr = title_expr,
-     ylab       = ylab,
-     palette    = pal_subtype
-   )
+  pooled <- prep_ribbon_df(
+    pooled_raw,
+    group_var = arf_subtype,
+    group_clean_fn = clean_subtype,
+    levels = subtype_levels
+  )
+  
+  rug_df <- prep_rug_df(
+    files,
+    group_var = arf_subtype,
+    group_clean_fn = clean_subtype,
+    levels = subtype_levels
+  )
+  
+  title_expr <- as.expression(bquote(.(t_stub) * NO[2] * ""))
+  
+  p <- plot_ribbon_pub(
+    pooled,
+    group_var  = arf_subtype,
+    title_expr = title_expr,
+    ylab       = ylab,
+    palette    = pal_subtype,
+    rug_df     = rug_df
+  )
    
    plot_name <- paste0("subtype_", o_key, "_from_", source_group)
    plots[[plot_name]] <- p
@@ -4754,9 +4817,9 @@ p_no2
  output_dir <- file.path(subtype_dir, "output")
  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
  
- png_w <- 7.5
- png_h <- 5.0
- dpi   <- 600
+png_w <- 11.0
+png_h <- 5.0
+dpi   <- 600
  
  for (nm in names(plots)) {
    p <- plots[[nm]]
@@ -4809,20 +4872,20 @@ p_no2
  output_dir <- file.path(subtype_dir, "output")
  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
  
- ggsave(
-   filename = file.path(output_dir, "NO2_ARFsubtype_pooled_ABC.png"),
-   plot     = fig_ABC,
-   width    = 5.5, height = 9, units = "in",
-   dpi      = 600,
-   bg       = "white"
- )
- 
- ggsave(
-   filename = file.path(output_dir, "NO2_ARFsubtype_pooled_ABC.pdf"),
-   plot     = fig_ABC,
-   width    = 18, height = 5.5, units = "in",
-   device   = cairo_pdf
- )
+ggsave(
+  filename = file.path(output_dir, "NO2_ARFsubtype_pooled_ABC.png"),
+  plot     = fig_ABC,
+  width    = 10.5, height = 9, units = "in",
+  dpi      = 600,
+  bg       = "white"
+)
+
+ggsave(
+  filename = file.path(output_dir, "NO2_ARFsubtype_pooled_ABC.pdf"),
+  plot     = fig_ABC,
+  width    = 10.5, height = 9, units = "in",
+  device   = cairo_pdf
+)
  
  fig_ABC
 
@@ -5276,4 +5339,3 @@ legend_expr_no2  <- expression(bold(NO[2]~"(ppb)"))
  
  
  
-

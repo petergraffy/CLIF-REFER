@@ -64,8 +64,12 @@ time_zone <- config$time_zone %||% "UTC"
 study_start <- as.Date(config$study_start %||% "2018-01-01")
 study_end <- as.Date(config$study_end %||% "2024-12-31")
 followup_days <- as.integer(config$followup_days %||% 30)
+vfd_days <- as.integer(config$vfd_days %||% 28)
+covid_sensitivity_exclude_start <- as.Date(config$covid_sensitivity_exclude_start %||% "2020-03-01")
+covid_sensitivity_exclude_end <- as.Date(config$covid_sensitivity_exclude_end %||% "2021-02-28")
 pm25_prior_months <- as.integer(config$pm25_prior_months %||% 12)
 no2_prior_months <- as.integer(config$no2_prior_months %||% 12)
+o3_prior_months <- as.integer(config$o3_prior_months %||% 12)
 no2_lag_years <- as.integer(config$no2_lag_years %||% 1)
 charlson_lookback_days <- as.integer(config$charlson_lookback_days %||% 365)
 charlson_include_index <- isTRUE(config$charlson_include_index_diagnoses %||% TRUE)
@@ -594,6 +598,10 @@ pm25_path <- normalizePath(
   config$zcta_pm25_monthly_path %||% file.path(default_zcta_dir, "air_pollution_zcta_pm25_monthly_2005_2023.parquet"),
   mustWork = TRUE
 )
+o3_path <- normalizePath(
+  config$zcta_o3_monthly_path %||% file.path(default_zcta_dir, "air_pollution_zcta_o3_monthly_2005_2023.parquet"),
+  mustWork = TRUE
+)
 no2_monthly_dir <- config$zcta_no2_monthly_dir %||% default_monthly_no2_dir
 no2_monthly_files <- character()
 if (dir.exists(no2_monthly_dir)) {
@@ -627,6 +635,30 @@ pm25_exposure <- cohort %>%
   summarise(
     pm25_12m_zcta = mean(pm25_ug_m3, na.rm = TRUE),
     pm25_months_observed = n_distinct(exposure_month),
+    .groups = "drop"
+  )
+
+o3_monthly <- arrow::read_parquet(o3_path) %>%
+  transmute(
+    zipcode_five_digit = normalize_zip(zip),
+    exposure_month = as.Date(sprintf("%04d-%02d-01", as.integer(year), as.integer(month))),
+    o3_ppb = as.numeric(first_existing(pick(everything()), c("o3_ppb", "o3"), default = NA))
+  ) %>%
+  filter(!is.na(zipcode_five_digit), !is.na(exposure_month), !is.na(o3_ppb))
+
+o3_exposure <- cohort %>%
+  transmute(
+    hospitalization_id,
+    zipcode_five_digit,
+    exposure_start = floor_date(as.Date(arf_onset), "month") %m-% months(o3_prior_months),
+    exposure_end = floor_date(as.Date(arf_onset), "month") - days(1)
+  ) %>%
+  left_join(o3_monthly, by = "zipcode_five_digit", relationship = "many-to-many") %>%
+  filter(exposure_month >= exposure_start, exposure_month <= exposure_end) %>%
+  group_by(hospitalization_id) %>%
+  summarise(
+    o3_12m_zcta = mean(o3_ppb, na.rm = TRUE),
+    o3_months_observed = n_distinct(exposure_month),
     .groups = "drop"
   )
 
@@ -734,6 +766,7 @@ if (length(no2_monthly_files)) {
 
 cohort <- cohort %>%
   left_join(pm25_exposure, by = "hospitalization_id") %>%
+  left_join(o3_exposure, by = "hospitalization_id") %>%
   left_join(no2_exposure, by = "hospitalization_id") %>%
   left_join(
     sofa_scores %>%
@@ -845,6 +878,60 @@ death_times <- cohort %>%
   ) %>%
   select(hospitalization_id, death_time)
 
+primary_mortality_outcomes <- cohort %>%
+  select(hospitalization_id, arf_onset, last_icu_out, discharge_dttm) %>%
+  left_join(death_times, by = "hospitalization_id") %>%
+  mutate(
+    mortality_event = as.integer(!is.na(death_time) & death_time >= arf_onset),
+    mortality_end_time = if_else(
+      mortality_event == 1L,
+      death_time,
+      coalesce(discharge_dttm, last_icu_out)
+    ),
+    mortality_ftime_days = as.numeric(difftime(mortality_end_time, arf_onset, units = "days")),
+    mortality_ftime_days = pmax(mortality_ftime_days, 1 / 24)
+  ) %>%
+  select(hospitalization_id, mortality_event, mortality_end_time, mortality_ftime_days)
+
+imv_days_through_vfd <- imv_runs %>%
+  left_join(cohort %>% select(hospitalization_id, arf_onset), by = "hospitalization_id") %>%
+  mutate(
+    vfd_end = arf_onset + days(vfd_days),
+    run_start = pmax(imv_start, arf_onset, na.rm = TRUE),
+    run_end = pmin(imv_end + hours(imv_gap_hours), vfd_end, na.rm = TRUE),
+    imv_days = pmax(as.numeric(difftime(run_end, run_start, units = "days")), 0)
+  ) %>%
+  filter(is.finite(imv_days), imv_days > 0) %>%
+  group_by(hospitalization_id) %>%
+  summarise(
+    imv_days_through_vfd = sum(imv_days, na.rm = TRUE),
+    has_imv_after_arf = TRUE,
+    .groups = "drop"
+  )
+
+vfd_outcomes <- cohort %>%
+  select(hospitalization_id, arf_onset) %>%
+  left_join(death_times, by = "hospitalization_id") %>%
+  left_join(imv_days_through_vfd, by = "hospitalization_id") %>%
+  mutate(
+    imv_days_through_vfd = coalesce(imv_days_through_vfd, 0),
+    has_imv_after_arf = coalesce(has_imv_after_arf, FALSE),
+    died_before_vfd_horizon = !is.na(death_time) & death_time <= arf_onset + days(vfd_days),
+    ventilator_free_days = if_else(
+      died_before_vfd_horizon,
+      0,
+      pmax(vfd_days - imv_days_through_vfd, 0)
+    ),
+    ventilator_free_days = pmin(ventilator_free_days, vfd_days)
+  ) %>%
+  select(
+    hospitalization_id,
+    has_imv_after_arf,
+    imv_days_through_vfd,
+    died_before_vfd_horizon,
+    ventilator_free_days
+  )
+
 event_data <- cohort %>%
   select(hospitalization_id, arf_onset, last_icu_out, discharge_dttm) %>%
   left_join(death_times, by = "hospitalization_id") %>%
@@ -901,6 +988,8 @@ events <- event_data %>%
   mutate(ftime_days = pmax(ftime_days, 1 / 24))
 
 analysis_df_all_icu_los <- cohort %>%
+  left_join(primary_mortality_outcomes, by = "hospitalization_id") %>%
+  left_join(vfd_outcomes, by = "hospitalization_id") %>%
   left_join(events, by = "hospitalization_id") %>%
   mutate(
     site = site_name,
@@ -908,6 +997,7 @@ analysis_df_all_icu_los <- cohort %>%
     no2_q = make_quartile(no2_12m_zcta),
     pm25_per_5 = pm25_12m_zcta / 5,
     no2_per_10 = no2_12m_zcta / 10,
+    o3_per_10 = o3_12m_zcta / 10,
     age_10 = age / 10,
     acs_median_household_income_10k = acs_median_household_income / 10000,
     index_year_f = factor(index_year),
@@ -920,9 +1010,19 @@ analysis_df_all_icu_los <- cohort %>%
 analysis_df <- analysis_df_all_icu_los %>%
   filter(!is.na(icu_los_hours), icu_los_hours >= primary_min_icu_los_hours)
 
+analysis_df_no_peak_covid <- analysis_df %>%
+  filter(
+    as.Date(arf_onset) < covid_sensitivity_exclude_start |
+      as.Date(arf_onset) > covid_sensitivity_exclude_end
+  )
+
 readr::write_csv(
   analysis_df_all_icu_los,
   file.path(out_root, "resubmission_analysis_dataset_no_icu_los_restriction.csv")
+)
+readr::write_csv(
+  analysis_df_no_peak_covid,
+  file.path(out_root, "resubmission_analysis_dataset_no_peak_covid.csv")
 )
 readr::write_csv(analysis_df, file.path(out_root, "resubmission_analysis_dataset.csv"))
 
@@ -933,6 +1033,7 @@ cohort_summary <- tibble(
   n_patients = n_distinct(analysis_df$patient_id),
   n_with_pm25 = sum(!is.na(analysis_df$pm25_12m_zcta)),
   n_with_no2 = sum(!is.na(analysis_df$no2_12m_zcta)),
+  n_with_o3 = sum(!is.na(analysis_df$o3_12m_zcta)),
   n_with_sofa_total = sum(!is.na(analysis_df$sofa_total)),
   n_with_zcta_acs = sum(complete.cases(analysis_df[, c(
     "acs_pct_poverty",
@@ -942,6 +1043,13 @@ cohort_summary <- tibble(
     "acs_median_household_income_10k",
     "acs_pct_bachelor_plus"
   )])),
+  n_mortality_events = sum(analysis_df$mortality_event == 1, na.rm = TRUE),
+  median_mortality_followup_days = median(analysis_df$mortality_ftime_days, na.rm = TRUE),
+  n_with_imv_after_arf = sum(analysis_df$has_imv_after_arf, na.rm = TRUE),
+  vfd_horizon_days = vfd_days,
+  mean_ventilator_free_days = mean(analysis_df$ventilator_free_days, na.rm = TRUE),
+  median_ventilator_free_days = median(analysis_df$ventilator_free_days, na.rm = TRUE),
+  n_vfd_zero = sum(analysis_df$ventilator_free_days == 0, na.rm = TRUE),
   n_death = sum(analysis_df$event_code == 2, na.rm = TRUE),
   n_extubation = sum(analysis_df$event_code == 1, na.rm = TRUE),
   n_persistent_rf = sum(analysis_df$event_code == 3, na.rm = TRUE),
@@ -959,6 +1067,7 @@ cohort_summary_no_icu_los_restriction <- tibble(
   n_added_vs_primary = nrow(analysis_df_all_icu_los) - nrow(analysis_df),
   n_with_pm25 = sum(!is.na(analysis_df_all_icu_los$pm25_12m_zcta)),
   n_with_no2 = sum(!is.na(analysis_df_all_icu_los$no2_12m_zcta)),
+  n_with_o3 = sum(!is.na(analysis_df_all_icu_los$o3_12m_zcta)),
   n_with_sofa_total = sum(!is.na(analysis_df_all_icu_los$sofa_total)),
   n_with_zcta_acs = sum(complete.cases(analysis_df_all_icu_los[, c(
     "acs_pct_poverty",
@@ -968,6 +1077,13 @@ cohort_summary_no_icu_los_restriction <- tibble(
     "acs_median_household_income_10k",
     "acs_pct_bachelor_plus"
   )])),
+  n_mortality_events = sum(analysis_df_all_icu_los$mortality_event == 1, na.rm = TRUE),
+  median_mortality_followup_days = median(analysis_df_all_icu_los$mortality_ftime_days, na.rm = TRUE),
+  n_with_imv_after_arf = sum(analysis_df_all_icu_los$has_imv_after_arf, na.rm = TRUE),
+  vfd_horizon_days = vfd_days,
+  mean_ventilator_free_days = mean(analysis_df_all_icu_los$ventilator_free_days, na.rm = TRUE),
+  median_ventilator_free_days = median(analysis_df_all_icu_los$ventilator_free_days, na.rm = TRUE),
+  n_vfd_zero = sum(analysis_df_all_icu_los$ventilator_free_days == 0, na.rm = TRUE),
   n_death = sum(analysis_df_all_icu_los$event_code == 2, na.rm = TRUE),
   n_extubation = sum(analysis_df_all_icu_los$event_code == 1, na.rm = TRUE),
   n_persistent_rf = sum(analysis_df_all_icu_los$event_code == 3, na.rm = TRUE),
@@ -980,8 +1096,481 @@ readr::write_csv(
   file.path(out_root, "resubmission_cohort_summary_no_icu_los_restriction.csv")
 )
 
+cohort_summary_no_peak_covid <- tibble(
+  site = site_name,
+  cohort = "sensitivity_no_peak_covid",
+  covid_exclude_start = covid_sensitivity_exclude_start,
+  covid_exclude_end = covid_sensitivity_exclude_end,
+  n_arf = nrow(analysis_df_no_peak_covid),
+  n_patients = n_distinct(analysis_df_no_peak_covid$patient_id),
+  n_excluded_vs_primary = nrow(analysis_df) - nrow(analysis_df_no_peak_covid),
+  n_with_pm25 = sum(!is.na(analysis_df_no_peak_covid$pm25_12m_zcta)),
+  n_with_no2 = sum(!is.na(analysis_df_no_peak_covid$no2_12m_zcta)),
+  n_with_o3 = sum(!is.na(analysis_df_no_peak_covid$o3_12m_zcta)),
+  n_with_sofa_total = sum(!is.na(analysis_df_no_peak_covid$sofa_total)),
+  n_with_zcta_acs = sum(complete.cases(analysis_df_no_peak_covid[, c(
+    "acs_pct_poverty",
+    "acs_pct_unemployed",
+    "acs_pct_no_vehicle",
+    "acs_pct_nonwhite",
+    "acs_median_household_income_10k",
+    "acs_pct_bachelor_plus"
+  )])),
+  n_mortality_events = sum(analysis_df_no_peak_covid$mortality_event == 1, na.rm = TRUE),
+  median_mortality_followup_days = median(analysis_df_no_peak_covid$mortality_ftime_days, na.rm = TRUE),
+  n_with_imv_after_arf = sum(analysis_df_no_peak_covid$has_imv_after_arf, na.rm = TRUE),
+  vfd_horizon_days = vfd_days,
+  mean_ventilator_free_days = mean(analysis_df_no_peak_covid$ventilator_free_days, na.rm = TRUE),
+  median_ventilator_free_days = median(analysis_df_no_peak_covid$ventilator_free_days, na.rm = TRUE),
+  n_vfd_zero = sum(analysis_df_no_peak_covid$ventilator_free_days == 0, na.rm = TRUE),
+  n_death = sum(analysis_df_no_peak_covid$event_code == 2, na.rm = TRUE),
+  n_extubation = sum(analysis_df_no_peak_covid$event_code == 1, na.rm = TRUE),
+  n_persistent_rf = sum(analysis_df_no_peak_covid$event_code == 3, na.rm = TRUE),
+  n_censored = sum(analysis_df_no_peak_covid$event_code == 0, na.rm = TRUE),
+  mean_charlson = mean(analysis_df_no_peak_covid$charlson_score, na.rm = TRUE),
+  median_charlson = median(analysis_df_no_peak_covid$charlson_score, na.rm = TRUE)
+)
+readr::write_csv(
+  cohort_summary_no_peak_covid,
+  file.path(out_root, "resubmission_cohort_summary_no_peak_covid.csv")
+)
+
+primary_social_covars <- c(
+  "acs_pct_poverty",
+  "acs_pct_unemployed",
+  "acs_pct_no_vehicle",
+  "acs_pct_nonwhite",
+  "acs_median_household_income_10k",
+  "acs_pct_bachelor_plus"
+)
+
+primary_adjustment_covars <- function(include_sofa_total = FALSE) {
+  covars <- c(
+    "age_10",
+    "sex",
+    "race_ethnicity",
+    "charlson_score",
+    "index_year_f",
+    primary_social_covars
+  )
+  if (include_sofa_total) {
+    covars <- append(covars, "sofa_total", after = match("charlson_score", covars))
+  }
+  covars
+}
+
+drop_uninformative_covars <- function(model_df, covars, exposure_terms) {
+  keep <- purrr::keep(covars, function(covar) {
+    if (covar %in% exposure_terms) return(TRUE)
+    x <- model_df[[covar]]
+    if (is.factor(x) || is.character(x)) {
+      return(dplyr::n_distinct(x, na.rm = TRUE) >= 2)
+    }
+    isTRUE(stats::var(as.numeric(x), na.rm = TRUE) > 0)
+  })
+  unname(keep)
+}
+
+message("Fitting primary mortality Cox models and VFD models...")
+build_primary_mortality_cox_fit <- function(
+  data,
+  exposure_terms,
+  model_label,
+  include_sofa_total = FALSE,
+  subgroup = "Overall"
+) {
+  covars <- c(exposure_terms, primary_adjustment_covars(include_sofa_total))
+  model_df <- data %>%
+    select(mortality_ftime_days, mortality_event, all_of(covars)) %>%
+    drop_na()
+  if (!nrow(model_df) || sum(model_df$mortality_event == 1) < 10) return(NULL)
+  covars <- drop_uninformative_covars(model_df, covars, exposure_terms)
+  model_df <- model_df %>% select(mortality_ftime_days, mortality_event, all_of(covars))
+  fml <- as.formula(paste0("Surv(mortality_ftime_days, mortality_event) ~ ", paste(covars, collapse = " + ")))
+  fit <- survival::coxph(fml, data = model_df, ties = "efron", x = TRUE)
+  list(
+    fit = fit,
+    model_df = model_df,
+    model_label = model_label,
+    subgroup = subgroup,
+    exposure_terms = exposure_terms,
+    covars = covars,
+    include_sofa_total = include_sofa_total
+  )
+}
+
+tidy_primary_mortality_cox <- function(fit_obj) {
+  if (is.null(fit_obj)) return(tibble())
+  broom::tidy(fit_obj$fit, exponentiate = TRUE, conf.int = TRUE) %>%
+    filter(term %in% fit_obj$exposure_terms) %>%
+    transmute(
+      site = site_name,
+      outcome = "Mortality after ARF onset",
+      model = fit_obj$model_label,
+      subgroup = fit_obj$subgroup,
+      term,
+      n = nrow(fit_obj$model_df),
+      events = sum(fit_obj$model_df$mortality_event == 1),
+      hazard_ratio = estimate,
+      conf_low = conf.low,
+      conf_high = conf.high,
+      p_value = p.value,
+      adjustment_set = paste(setdiff(fit_obj$covars, fit_obj$exposure_terms), collapse = " + "),
+      includes_sofa_total = fit_obj$include_sofa_total
+    )
+}
+
+tidy_primary_mortality_ph <- function(fit_obj) {
+  if (is.null(fit_obj)) return(tibble())
+  zph <- tryCatch(
+    survival::cox.zph(fit_obj$fit, terms = TRUE),
+    error = function(e) {
+      warning("cox.zph failed for primary mortality / ", fit_obj$model_label, ": ", conditionMessage(e))
+      NULL
+    }
+  )
+  if (is.null(zph)) return(tibble())
+  as_tibble(zph$table, rownames = "term") %>%
+    rename(chisq = chisq, p_value = p) %>%
+    mutate(
+      site = site_name,
+      outcome = "Mortality after ARF onset",
+      model = fit_obj$model_label,
+      subgroup = fit_obj$subgroup,
+      n = nrow(fit_obj$model_df),
+      events = sum(fit_obj$model_df$mortality_event == 1),
+      term_type = case_when(
+        term %in% fit_obj$exposure_terms ~ "exposure",
+        term == "GLOBAL" ~ "global",
+        TRUE ~ "covariate"
+      ),
+      includes_sofa_total = fit_obj$include_sofa_total,
+      .before = term
+    )
+}
+
+build_vfd_fit <- function(
+  data,
+  exposure_terms,
+  model_label,
+  include_sofa_total = FALSE,
+  subgroup = "Overall"
+) {
+  covars <- c(exposure_terms, primary_adjustment_covars(include_sofa_total))
+  model_df <- data %>%
+    select(ventilator_free_days, all_of(covars)) %>%
+    drop_na()
+  if (!nrow(model_df)) return(NULL)
+  covars <- drop_uninformative_covars(model_df, covars, exposure_terms)
+  model_df <- model_df %>% select(ventilator_free_days, all_of(covars))
+  fml <- as.formula(paste0("ventilator_free_days ~ ", paste(covars, collapse = " + ")))
+  fit <- stats::glm(fml, data = model_df, family = quasipoisson(link = "log"))
+  list(
+    fit = fit,
+    model_df = model_df,
+    model_label = model_label,
+    subgroup = subgroup,
+    exposure_terms = exposure_terms,
+    covars = covars,
+    include_sofa_total = include_sofa_total
+  )
+}
+
+tidy_vfd <- function(fit_obj) {
+  if (is.null(fit_obj)) return(tibble())
+  broom::tidy(fit_obj$fit) %>%
+    filter(term %in% fit_obj$exposure_terms) %>%
+    transmute(
+      site = site_name,
+      outcome = glue("Ventilator-free days through day {vfd_days}"),
+      model = fit_obj$model_label,
+      subgroup = fit_obj$subgroup,
+      term,
+      n = nrow(fit_obj$model_df),
+      mean_vfd = mean(fit_obj$model_df$ventilator_free_days, na.rm = TRUE),
+      ratio_of_means = exp(estimate),
+      conf_low = exp(estimate - 1.96 * std.error),
+      conf_high = exp(estimate + 1.96 * std.error),
+      p_value = p.value,
+      dispersion = summary(fit_obj$fit)$dispersion,
+      adjustment_set = paste(setdiff(fit_obj$covars, fit_obj$exposure_terms), collapse = " + "),
+      includes_sofa_total = fit_obj$include_sofa_total
+    )
+}
+
+make_primary_mortality_fits <- function(data, include_sofa_total = FALSE, subgroup = "Overall") {
+  list(
+    build_primary_mortality_cox_fit(data, "pm25_per_5", "PM25 single-pollutant", include_sofa_total, subgroup),
+    build_primary_mortality_cox_fit(data, "no2_per_10", "NO2 single-pollutant", include_sofa_total, subgroup),
+    build_primary_mortality_cox_fit(data, c("pm25_per_5", "no2_per_10"), "PM25 + NO2", include_sofa_total, subgroup)
+  )
+}
+
+make_vfd_fits <- function(data, include_sofa_total = FALSE, subgroup = "Overall") {
+  list(
+    build_vfd_fit(data, "pm25_per_5", "PM25 single-pollutant", include_sofa_total, subgroup),
+    build_vfd_fit(data, "no2_per_10", "NO2 single-pollutant", include_sofa_total, subgroup),
+    build_vfd_fit(data, c("pm25_per_5", "no2_per_10"), "PM25 + NO2", include_sofa_total, subgroup)
+  )
+}
+
+interaction_term_regex <- function(exposure_terms) {
+  paste0("(^arf_subtype.*:(", paste(exposure_terms, collapse = "|"), ")$)|(^(", paste(exposure_terms, collapse = "|"), "):arf_subtype)")
+}
+
+build_primary_mortality_interaction_fit <- function(data, exposure_terms, model_label) {
+  adjustment_covars <- primary_adjustment_covars(FALSE)
+  covars <- c(exposure_terms, "arf_subtype", adjustment_covars)
+  model_df <- data %>%
+    select(mortality_ftime_days, mortality_event, all_of(covars)) %>%
+    drop_na() %>%
+    mutate(
+      arf_subtype = droplevels(arf_subtype),
+      sex = droplevels(sex),
+      race_ethnicity = droplevels(race_ethnicity),
+      index_year_f = droplevels(index_year_f)
+    )
+  if (!nrow(model_df) || sum(model_df$mortality_event == 1) < 10) return(NULL)
+  adjustment_covars <- drop_uninformative_covars(model_df, adjustment_covars, character())
+  interaction_terms <- paste0(exposure_terms, " * arf_subtype")
+  fml <- as.formula(paste0(
+    "Surv(mortality_ftime_days, mortality_event) ~ ",
+    paste(c(interaction_terms, adjustment_covars), collapse = " + ")
+  ))
+  fit <- survival::coxph(fml, data = model_df, ties = "efron", x = TRUE)
+  list(
+    fit = fit,
+    model_df = model_df,
+    outcome = "Mortality after ARF onset",
+    model_label = model_label,
+    exposure_terms = exposure_terms,
+    adjustment_covars = adjustment_covars
+  )
+}
+
+build_vfd_interaction_fit <- function(data, exposure_terms, model_label) {
+  adjustment_covars <- primary_adjustment_covars(FALSE)
+  covars <- c(exposure_terms, "arf_subtype", adjustment_covars)
+  model_df <- data %>%
+    select(ventilator_free_days, all_of(covars)) %>%
+    drop_na() %>%
+    mutate(
+      arf_subtype = droplevels(arf_subtype),
+      sex = droplevels(sex),
+      race_ethnicity = droplevels(race_ethnicity),
+      index_year_f = droplevels(index_year_f)
+    )
+  if (!nrow(model_df)) return(NULL)
+  adjustment_covars <- drop_uninformative_covars(model_df, adjustment_covars, character())
+  interaction_terms <- paste0(exposure_terms, " * arf_subtype")
+  fml <- as.formula(paste0(
+    "ventilator_free_days ~ ",
+    paste(c(interaction_terms, adjustment_covars), collapse = " + ")
+  ))
+  fit <- stats::glm(fml, data = model_df, family = quasipoisson(link = "log"))
+  list(
+    fit = fit,
+    model_df = model_df,
+    outcome = glue("Ventilator-free days through day {vfd_days}"),
+    model_label = model_label,
+    exposure_terms = exposure_terms,
+    adjustment_covars = adjustment_covars
+  )
+}
+
+tidy_interaction_fit <- function(fit_obj) {
+  if (is.null(fit_obj)) return(tibble())
+  interaction_pattern <- interaction_term_regex(fit_obj$exposure_terms)
+  broom::tidy(fit_obj$fit, exponentiate = TRUE, conf.int = TRUE) %>%
+    filter(str_detect(term, interaction_pattern)) %>%
+    transmute(
+      site = site_name,
+      outcome = fit_obj$outcome,
+      model = fit_obj$model_label,
+      term,
+      n = nrow(fit_obj$model_df),
+      events = if ("mortality_event" %in% names(fit_obj$model_df)) sum(fit_obj$model_df$mortality_event == 1) else NA_integer_,
+      estimate_ratio = estimate,
+      conf_low = conf.low,
+      conf_high = conf.high,
+      p_value = p.value,
+      adjustment_set = paste(fit_obj$adjustment_covars, collapse = " + ")
+    )
+}
+
+make_primary_interaction_fits <- function(data, fit_fun) {
+  list(
+    fit_fun(data, "pm25_per_5", "PM25 x ARF subtype"),
+    fit_fun(data, "no2_per_10", "NO2 x ARF subtype"),
+    fit_fun(data, c("pm25_per_5", "no2_per_10"), "PM25 + NO2 x ARF subtype")
+  )
+}
+
+primary_mortality_fits <- make_primary_mortality_fits(analysis_df, include_sofa_total = FALSE)
+primary_mortality_results <- bind_rows(lapply(primary_mortality_fits, tidy_primary_mortality_cox))
+readr::write_csv(
+  primary_mortality_results,
+  file.path(out_root, "resubmission_primary_mortality_cox_results.csv")
+)
+
+primary_mortality_ph <- bind_rows(lapply(primary_mortality_fits, tidy_primary_mortality_ph))
+readr::write_csv(
+  primary_mortality_ph,
+  file.path(out_root, "resubmission_primary_mortality_cox_ph_diagnostics.csv")
+)
+
+primary_vfd_fits <- make_vfd_fits(analysis_df, include_sofa_total = FALSE)
+primary_vfd_results <- bind_rows(lapply(primary_vfd_fits, tidy_vfd))
+readr::write_csv(
+  primary_vfd_results,
+  file.path(out_root, "resubmission_primary_ventilator_free_days_results.csv")
+)
+
+primary_mortality_interaction_results <- bind_rows(lapply(
+  make_primary_interaction_fits(analysis_df, build_primary_mortality_interaction_fit),
+  tidy_interaction_fit
+))
+readr::write_csv(
+  primary_mortality_interaction_results,
+  file.path(out_root, "resubmission_primary_mortality_cox_exposure_by_arf_subtype_interactions.csv")
+)
+
+primary_vfd_interaction_results <- bind_rows(lapply(
+  make_primary_interaction_fits(analysis_df, build_vfd_interaction_fit),
+  tidy_interaction_fit
+))
+readr::write_csv(
+  primary_vfd_interaction_results,
+  file.path(out_root, "resubmission_primary_ventilator_free_days_exposure_by_arf_subtype_interactions.csv")
+)
+
+subtype_summary <- analysis_df %>%
+  group_by(arf_subtype) %>%
+  summarise(
+    site = site_name,
+    n_arf = n(),
+    n_patients = n_distinct(patient_id),
+    n_complete_case_primary = sum(complete.cases(pick(
+      mortality_ftime_days,
+      mortality_event,
+      pm25_per_5,
+      no2_per_10,
+      age_10,
+      sex,
+      race_ethnicity,
+      charlson_score,
+      index_year_f,
+      all_of(primary_social_covars)
+    ))),
+    n_mortality_events = sum(mortality_event == 1, na.rm = TRUE),
+    median_mortality_followup_days = median(mortality_ftime_days, na.rm = TRUE),
+    n_with_imv_after_arf = sum(has_imv_after_arf, na.rm = TRUE),
+    mean_ventilator_free_days = mean(ventilator_free_days, na.rm = TRUE),
+    median_ventilator_free_days = median(ventilator_free_days, na.rm = TRUE),
+    n_vfd_zero = sum(ventilator_free_days == 0, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  relocate(site, .before = arf_subtype)
+readr::write_csv(
+  subtype_summary,
+  file.path(out_root, "resubmission_primary_by_arf_subtype_summary.csv")
+)
+
+fit_primary_by_subtype <- function(data, fit_fun, tidy_fun) {
+  subtype_levels <- levels(droplevels(factor(data$arf_subtype)))
+  purrr::map_dfr(subtype_levels, function(subtype_i) {
+    subtype_data <- data %>%
+      filter(arf_subtype == subtype_i) %>%
+      mutate(
+        sex = droplevels(sex),
+        race_ethnicity = droplevels(race_ethnicity),
+        index_year_f = droplevels(index_year_f)
+      )
+    fits <- fit_fun(subtype_data, include_sofa_total = FALSE, subgroup = subtype_i)
+    bind_rows(lapply(fits, tidy_fun))
+  })
+}
+
+primary_mortality_by_subtype <- fit_primary_by_subtype(
+  analysis_df,
+  make_primary_mortality_fits,
+  tidy_primary_mortality_cox
+)
+readr::write_csv(
+  primary_mortality_by_subtype,
+  file.path(out_root, "resubmission_primary_mortality_cox_results_by_arf_subtype.csv")
+)
+
+primary_vfd_by_subtype <- fit_primary_by_subtype(
+  analysis_df,
+  make_vfd_fits,
+  tidy_vfd
+)
+readr::write_csv(
+  primary_vfd_by_subtype,
+  file.path(out_root, "resubmission_primary_ventilator_free_days_results_by_arf_subtype.csv")
+)
+
+primary_mortality_sofa_results <- bind_rows(lapply(
+  make_primary_mortality_fits(analysis_df, include_sofa_total = TRUE),
+  tidy_primary_mortality_cox
+))
+readr::write_csv(
+  primary_mortality_sofa_results,
+  file.path(out_root, "resubmission_primary_mortality_cox_results_sofa_sensitivity.csv")
+)
+
+primary_vfd_sofa_results <- bind_rows(lapply(
+  make_vfd_fits(analysis_df, include_sofa_total = TRUE),
+  tidy_vfd
+))
+readr::write_csv(
+  primary_vfd_sofa_results,
+  file.path(out_root, "resubmission_primary_ventilator_free_days_results_sofa_sensitivity.csv")
+)
+
+primary_mortality_no_peak_covid <- bind_rows(lapply(
+  make_primary_mortality_fits(analysis_df_no_peak_covid),
+  tidy_primary_mortality_cox
+))
+readr::write_csv(
+  primary_mortality_no_peak_covid,
+  file.path(out_root, "resubmission_primary_mortality_cox_results_no_peak_covid.csv")
+)
+
+primary_vfd_no_peak_covid <- bind_rows(lapply(
+  make_vfd_fits(analysis_df_no_peak_covid),
+  tidy_vfd
+))
+readr::write_csv(
+  primary_vfd_no_peak_covid,
+  file.path(out_root, "resubmission_primary_ventilator_free_days_results_no_peak_covid.csv")
+)
+
+primary_mortality_o3_results <- bind_rows(lapply(
+  list(
+    build_primary_mortality_cox_fit(analysis_df, c("pm25_per_5", "no2_per_10", "o3_per_10"), "PM25 + NO2 + O3")
+  ),
+  tidy_primary_mortality_cox
+))
+readr::write_csv(
+  primary_mortality_o3_results,
+  file.path(out_root, "resubmission_primary_mortality_cox_results_o3_sensitivity.csv")
+)
+
+primary_vfd_o3_results <- bind_rows(lapply(
+  list(
+    build_vfd_fit(analysis_df, c("pm25_per_5", "no2_per_10", "o3_per_10"), "PM25 + NO2 + O3")
+  ),
+  tidy_vfd
+))
+readr::write_csv(
+  primary_vfd_o3_results,
+  file.path(out_root, "resubmission_primary_ventilator_free_days_results_o3_sensitivity.csv")
+)
+
 message("Fitting cause-specific Cox models...")
-fit_cause_cox <- function(
+build_cause_cox_fit <- function(
   data,
   cause_code,
   cause_label,
@@ -1016,44 +1605,152 @@ fit_cause_cox <- function(
   model_df <- data %>%
     select(ftime_days, event_code, all_of(covars)) %>%
     drop_na()
-  if (!nrow(model_df) || sum(model_df$event_code == cause_code) < 10) return(tibble())
+  if (!nrow(model_df) || sum(model_df$event_code == cause_code) < 10) return(NULL)
   fml <- as.formula(paste0("Surv(ftime_days, event_code == ", cause_code, ") ~ ", paste(covars, collapse = " + ")))
-  fit <- survival::coxph(fml, data = model_df, ties = "efron")
-  broom::tidy(fit, exponentiate = TRUE, conf.int = TRUE) %>%
-    filter(term %in% exposure_terms) %>%
+  fit <- survival::coxph(fml, data = model_df, ties = "efron", x = TRUE)
+  list(
+    fit = fit,
+    model_df = model_df,
+    cause_code = cause_code,
+    cause_label = cause_label,
+    exposure_terms = exposure_terms,
+    model_label = model_label,
+    covars = covars,
+    include_arf_subtype = include_arf_subtype,
+    include_sofa_total = include_sofa_total
+  )
+}
+
+tidy_cause_cox <- function(fit_obj) {
+  if (is.null(fit_obj)) return(tibble())
+  broom::tidy(fit_obj$fit, exponentiate = TRUE, conf.int = TRUE) %>%
+    filter(term %in% fit_obj$exposure_terms) %>%
     transmute(
       site = site_name,
-      model = model_label,
-      cause = cause_label,
+      model = fit_obj$model_label,
+      cause = fit_obj$cause_label,
       term,
-      n = nrow(model_df),
-      events = sum(model_df$event_code == cause_code),
+      n = nrow(fit_obj$model_df),
+      events = sum(fit_obj$model_df$event_code == fit_obj$cause_code),
       hazard_ratio = estimate,
       conf_low = conf.low,
       conf_high = conf.high,
       p_value = p.value,
-      adjustment_set = paste(setdiff(covars, exposure_terms), collapse = " + "),
-      includes_arf_subtype = include_arf_subtype,
-      includes_sofa_total = include_sofa_total
+      adjustment_set = paste(setdiff(fit_obj$covars, fit_obj$exposure_terms), collapse = " + "),
+      includes_arf_subtype = fit_obj$include_arf_subtype,
+      includes_sofa_total = fit_obj$include_sofa_total
     )
 }
 
-fit_all_cause_cox <- function(data, include_arf_subtype = FALSE, include_sofa_total = FALSE) {
-  bind_rows(
-    fit_cause_cox(data, 1, "Successful extubation", "pm25_per_5", "PM25 single-pollutant", include_arf_subtype, include_sofa_total),
-    fit_cause_cox(data, 2, "Death", "pm25_per_5", "PM25 single-pollutant", include_arf_subtype, include_sofa_total),
-    fit_cause_cox(data, 3, "Persistent respiratory failure", "pm25_per_5", "PM25 single-pollutant", include_arf_subtype, include_sofa_total),
-    fit_cause_cox(data, 1, "Successful extubation", "no2_per_10", "NO2 single-pollutant", include_arf_subtype, include_sofa_total),
-    fit_cause_cox(data, 2, "Death", "no2_per_10", "NO2 single-pollutant", include_arf_subtype, include_sofa_total),
-    fit_cause_cox(data, 3, "Persistent respiratory failure", "no2_per_10", "NO2 single-pollutant", include_arf_subtype, include_sofa_total),
-    fit_cause_cox(data, 1, "Successful extubation", c("pm25_per_5", "no2_per_10"), "PM25 + NO2", include_arf_subtype, include_sofa_total),
-    fit_cause_cox(data, 2, "Death", c("pm25_per_5", "no2_per_10"), "PM25 + NO2", include_arf_subtype, include_sofa_total),
-    fit_cause_cox(data, 3, "Persistent respiratory failure", c("pm25_per_5", "no2_per_10"), "PM25 + NO2", include_arf_subtype, include_sofa_total)
+tidy_cause_cox_ph <- function(fit_obj) {
+  if (is.null(fit_obj)) return(tibble())
+  zph <- tryCatch(
+    survival::cox.zph(fit_obj$fit, terms = TRUE),
+    error = function(e) {
+      warning("cox.zph failed for ", fit_obj$model_label, " / ", fit_obj$cause_label, ": ", conditionMessage(e))
+      NULL
+    }
+  )
+  if (is.null(zph)) return(tibble())
+  as_tibble(zph$table, rownames = "term") %>%
+    rename(
+      chisq = chisq,
+      p_value = p
+    ) %>%
+    mutate(
+      site = site_name,
+      model = fit_obj$model_label,
+      cause = fit_obj$cause_label,
+      n = nrow(fit_obj$model_df),
+      events = sum(fit_obj$model_df$event_code == fit_obj$cause_code),
+      term_type = case_when(
+        term %in% fit_obj$exposure_terms ~ "exposure",
+        term == "GLOBAL" ~ "global",
+        TRUE ~ "covariate"
+      ),
+      includes_arf_subtype = fit_obj$include_arf_subtype,
+      includes_sofa_total = fit_obj$include_sofa_total,
+      .before = term
+    )
+}
+
+matrix_logdet <- function(x) {
+  out <- tryCatch(determinant(x, logarithm = TRUE), error = function(e) NULL)
+  if (is.null(out) || out$sign <= 0) return(NA_real_)
+  as.numeric(out$modulus)
+}
+
+tidy_cause_cox_vif <- function(fit_obj) {
+  if (is.null(fit_obj)) return(tibble())
+  mm <- tryCatch(stats::model.matrix(fit_obj$fit), error = function(e) NULL)
+  if (is.null(mm)) return(tibble())
+  assign <- attr(mm, "assign")
+  term_labels <- attr(stats::terms(fit_obj$fit), "term.labels")
+  keep_cols <- which(assign > 0 & apply(mm, 2, stats::var, na.rm = TRUE) > 0)
+  mm <- mm[, keep_cols, drop = FALSE]
+  assign <- assign[keep_cols]
+  if (ncol(mm) < 2) return(tibble())
+
+  r <- stats::cor(mm)
+  logdet_all <- matrix_logdet(r)
+  purrr::map_dfr(seq_along(term_labels), function(term_index) {
+    subs <- which(assign == term_index)
+    if (!length(subs)) return(tibble())
+    df <- length(subs)
+    term <- term_labels[[term_index]]
+    if (length(subs) == ncol(r) || is.na(logdet_all)) {
+      gvif <- NA_real_
+    } else {
+      log_gvif <- matrix_logdet(r[subs, subs, drop = FALSE]) +
+        matrix_logdet(r[-subs, -subs, drop = FALSE]) -
+        logdet_all
+      gvif <- if (is.na(log_gvif)) NA_real_ else exp(log_gvif)
+    }
+    tibble(
+      site = site_name,
+      model = fit_obj$model_label,
+      cause = fit_obj$cause_label,
+      n = nrow(fit_obj$model_df),
+      events = sum(fit_obj$model_df$event_code == fit_obj$cause_code),
+      term,
+      term_type = if_else(term %in% fit_obj$exposure_terms, "exposure", "covariate"),
+      df,
+      gvif,
+      gvif_adjusted = if_else(!is.na(gvif), gvif^(1 / (2 * df)), NA_real_),
+      includes_arf_subtype = fit_obj$include_arf_subtype,
+      includes_sofa_total = fit_obj$include_sofa_total
+    )
+  })
+}
+
+make_cause_cox_fits <- function(data, include_arf_subtype = FALSE, include_sofa_total = FALSE) {
+  list(
+    build_cause_cox_fit(data, 1, "Successful extubation", "pm25_per_5", "PM25 single-pollutant", include_arf_subtype, include_sofa_total),
+    build_cause_cox_fit(data, 2, "Death", "pm25_per_5", "PM25 single-pollutant", include_arf_subtype, include_sofa_total),
+    build_cause_cox_fit(data, 3, "Persistent respiratory failure", "pm25_per_5", "PM25 single-pollutant", include_arf_subtype, include_sofa_total),
+    build_cause_cox_fit(data, 1, "Successful extubation", "no2_per_10", "NO2 single-pollutant", include_arf_subtype, include_sofa_total),
+    build_cause_cox_fit(data, 2, "Death", "no2_per_10", "NO2 single-pollutant", include_arf_subtype, include_sofa_total),
+    build_cause_cox_fit(data, 3, "Persistent respiratory failure", "no2_per_10", "NO2 single-pollutant", include_arf_subtype, include_sofa_total),
+    build_cause_cox_fit(data, 1, "Successful extubation", c("pm25_per_5", "no2_per_10"), "PM25 + NO2", include_arf_subtype, include_sofa_total),
+    build_cause_cox_fit(data, 2, "Death", c("pm25_per_5", "no2_per_10"), "PM25 + NO2", include_arf_subtype, include_sofa_total),
+    build_cause_cox_fit(data, 3, "Persistent respiratory failure", c("pm25_per_5", "no2_per_10"), "PM25 + NO2", include_arf_subtype, include_sofa_total)
   )
 }
 
-cox_results <- fit_all_cause_cox(analysis_df, include_arf_subtype = FALSE)
+fit_all_cause_cox <- function(data, include_arf_subtype = FALSE, include_sofa_total = FALSE) {
+  fits <- make_cause_cox_fits(data, include_arf_subtype, include_sofa_total)
+  bind_rows(lapply(fits, tidy_cause_cox))
+}
+
+primary_cox_fits <- make_cause_cox_fits(analysis_df, include_arf_subtype = FALSE)
+cox_results <- bind_rows(lapply(primary_cox_fits, tidy_cause_cox))
 readr::write_csv(cox_results, file.path(out_root, "resubmission_cause_specific_cox_results.csv"))
+
+cox_ph_diagnostics <- bind_rows(lapply(primary_cox_fits, tidy_cause_cox_ph))
+readr::write_csv(cox_ph_diagnostics, file.path(out_root, "resubmission_cause_specific_cox_ph_diagnostics.csv"))
+
+cox_vif_diagnostics <- bind_rows(lapply(primary_cox_fits, tidy_cause_cox_vif))
+readr::write_csv(cox_vif_diagnostics, file.path(out_root, "resubmission_cause_specific_cox_vif_diagnostics.csv"))
 
 cox_results_arf_subtype_sensitivity <- fit_all_cause_cox(analysis_df, include_arf_subtype = TRUE)
 readr::write_csv(
@@ -1071,6 +1768,22 @@ cox_results_no_icu_los_restriction <- fit_all_cause_cox(analysis_df_all_icu_los)
 readr::write_csv(
   cox_results_no_icu_los_restriction,
   file.path(out_root, "resubmission_cause_specific_cox_results_no_icu_los_restriction.csv")
+)
+
+cox_results_no_peak_covid <- fit_all_cause_cox(analysis_df_no_peak_covid)
+readr::write_csv(
+  cox_results_no_peak_covid,
+  file.path(out_root, "resubmission_cause_specific_cox_results_no_peak_covid.csv")
+)
+
+cox_results_o3_sensitivity <- bind_rows(
+  tidy_cause_cox(build_cause_cox_fit(analysis_df, 1, "Successful extubation", c("pm25_per_5", "no2_per_10", "o3_per_10"), "PM25 + NO2 + O3")),
+  tidy_cause_cox(build_cause_cox_fit(analysis_df, 2, "Death", c("pm25_per_5", "no2_per_10", "o3_per_10"), "PM25 + NO2 + O3")),
+  tidy_cause_cox(build_cause_cox_fit(analysis_df, 3, "Persistent respiratory failure", c("pm25_per_5", "no2_per_10", "o3_per_10"), "PM25 + NO2 + O3"))
+)
+readr::write_csv(
+  cox_results_o3_sensitivity,
+  file.path(out_root, "resubmission_cause_specific_cox_results_o3_sensitivity.csv")
 )
 
 message("Building unadjusted Aalen-Johansen CIFs...")

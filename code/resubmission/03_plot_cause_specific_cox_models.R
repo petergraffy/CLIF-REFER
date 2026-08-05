@@ -33,14 +33,18 @@ dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
 
 pollutant_colors <- c(
   "Fine particulate matter (PM2.5)" = "#0072B2",
-  "Nitrogen dioxide (NO2)" = "#D55E00"
+  "Nitrogen dioxide (NO2)" = "#D55E00",
+  "Ozone (O3)" = "#009E73"
 )
 
 model_row_labels <- c(
   "PM2.5 only" = "PM[2.5]*' only'",
   "NO2 only" = "NO[2]*' only'",
   "PM2.5 in PM2.5 + NO2" = "PM[2.5]*' in PM'[2.5]*' + NO'[2]",
-  "NO2 in PM2.5 + NO2" = "NO[2]*' in PM'[2.5]*' + NO'[2]"
+  "NO2 in PM2.5 + NO2" = "NO[2]*' in PM'[2.5]*' + NO'[2]",
+  "PM2.5 in PM2.5 + NO2 + O3" = "PM[2.5]*' in PM'[2.5]*' + NO'[2]*' + O'[3]",
+  "NO2 in PM2.5 + NO2 + O3" = "NO[2]*' in PM'[2.5]*' + NO'[2]*' + O'[3]",
+  "O3 in PM2.5 + NO2 + O3" = "O[3]*' in PM'[2.5]*' + NO'[2]*' + O'[3]"
 )
 
 theme_cox <- function(base_size = 18) {
@@ -65,6 +69,13 @@ theme_cox <- function(base_size = 18) {
     )
 }
 
+log_breaks_in_range <- function(n = 6) {
+  function(x) {
+    breaks <- scales::breaks_log(n = n)(x)
+    breaks[breaks >= x[[1]] & breaks <= x[[2]]]
+  }
+}
+
 cox_results <- read_csv(
   file.path(out_root, results_file),
   show_col_types = FALSE
@@ -80,12 +91,14 @@ cox_results <- read_csv(
     pollutant = case_when(
       term == "pm25_per_5" ~ "Fine particulate matter (PM2.5)",
       term == "no2_per_10" ~ "Nitrogen dioxide (NO2)",
+      term == "o3_per_10" ~ "Ozone (O3)",
       TRUE ~ term
     ),
     pollutant = factor(pollutant, levels = names(pollutant_colors)),
     scale_label = case_when(
       term == "pm25_per_5" ~ "per 5 ug/m3",
       term == "no2_per_10" ~ "per 10 ppb",
+      term == "o3_per_10" ~ "per 10 ppb",
       TRUE ~ ""
     ),
     model_row = case_when(
@@ -93,11 +106,22 @@ cox_results <- read_csv(
       model == "NO2 single-pollutant" ~ "NO2 only",
       model == "PM25 + NO2" & term == "pm25_per_5" ~ "PM2.5 in PM2.5 + NO2",
       model == "PM25 + NO2" & term == "no2_per_10" ~ "NO2 in PM2.5 + NO2",
+      model == "PM25 + NO2 + O3" & term == "pm25_per_5" ~ "PM2.5 in PM2.5 + NO2 + O3",
+      model == "PM25 + NO2 + O3" & term == "no2_per_10" ~ "NO2 in PM2.5 + NO2 + O3",
+      model == "PM25 + NO2 + O3" & term == "o3_per_10" ~ "O3 in PM2.5 + NO2 + O3",
       TRUE ~ model
     ),
     model_row = factor(
       model_row,
-      levels = rev(c("PM2.5 only", "NO2 only", "PM2.5 in PM2.5 + NO2", "NO2 in PM2.5 + NO2"))
+      levels = rev(c(
+        "PM2.5 only",
+        "NO2 only",
+        "PM2.5 in PM2.5 + NO2",
+        "NO2 in PM2.5 + NO2",
+        "PM2.5 in PM2.5 + NO2 + O3",
+        "NO2 in PM2.5 + NO2 + O3",
+        "O3 in PM2.5 + NO2 + O3"
+      ))
     ),
     estimate_label = sprintf("%.2f (%.2f, %.2f)", hazard_ratio, conf_low, conf_high),
     text_x = conf_high * 1.08
@@ -123,12 +147,13 @@ p_cox <- ggplot(cox_results, aes(x = hazard_ratio, y = model_row, color = pollut
     values = pollutant_colors,
     labels = c(
       "Fine particulate matter (PM2.5)" = expression("Fine particulate matter (PM"[2.5]*")"),
-      "Nitrogen dioxide (NO2)" = expression("Nitrogen dioxide (NO"[2]*")")
+      "Nitrogen dioxide (NO2)" = expression("Nitrogen dioxide (NO"[2]*")"),
+      "Ozone (O3)" = expression("Ozone (O"[3]*")")
     ),
-    drop = FALSE
+    drop = TRUE
   ) +
   scale_x_log10(
-    breaks = scales::breaks_log(n = 6),
+    breaks = log_breaks_in_range(n = 6),
     labels = label_number(accuracy = 0.01, trim = TRUE),
     expand = expansion(mult = c(0.04, 0.20))
   ) +
@@ -137,6 +162,10 @@ p_cox <- ggplot(cox_results, aes(x = hazard_ratio, y = model_row, color = pollut
     title = "Cause-Specific Cox Models",
     subtitle = if (str_detect(results_file, "no_icu_los")) {
       "Sensitivity model using the ARF cohort without the primary ICU length-of-stay restriction"
+    } else if (str_detect(results_file, "no_peak_covid")) {
+      "Sensitivity model excluding ARF onsets from March 1, 2020 through February 28, 2021"
+    } else if (str_detect(results_file, "o3_sensitivity")) {
+      "Sensitivity model additionally adjusted for 12-month pre-ARF ZCTA ozone exposure"
     } else if (any(cox_results$includes_sofa_total %||% FALSE, na.rm = TRUE)) {
       "Sensitivity model adjusted for demographics, Charlson score, SOFA total, index year, and ZCTA ACS social vulnerability covariates"
     } else if (any(cox_results$includes_arf_subtype %||% FALSE, na.rm = TRUE)) {

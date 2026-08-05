@@ -1,0 +1,36 @@
+flowchart LR
+  LOC["Residential location / ZCTA"] --> AP["Long-term ambient air pollution<br/>PM2.5, NO2, O3"]
+  LOC --> SDOH["Neighborhood socioeconomic context"]
+
+  SDOH --> AP
+  SDOH --> ACCESS["Healthcare access / hospital resources"]
+  SDOH --> BASE["Baseline health / comorbidity burden"]
+  SDOH --> OUT["Post-ARF outcomes"]
+
+  AGE["Age"] --> BASE
+  AGE --> ARFSEV["Initial ARF severity"]
+  AGE --> OUT
+
+  SEX["Sex"] --> BASE
+  SEX --> OUT
+
+  RACE["Race / ethnicity"] --> LOC
+  RACE --> SDOH
+  RACE --> ACCESS
+  RACE --> BASE
+  RACE --> OUT
+
+  BASE --> ARFSEV
+  BASE --> OUT
+  ARFSEV --> OUT
+
+  AP --> OUT
+
+  COHORT["ICU ARF cohort entry"]:::conditioned
+  AP --> COHORT
+  BASE --> COHORT
+  ACCESS --> COHORT
+  ARFSEV --> COHORT
+  COHORT --> OUT
+
+  classDef conditioned fill:#fff3cd,stroke:#8a6d1d,color:#3d3300;

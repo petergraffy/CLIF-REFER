@@ -7,8 +7,7 @@
 #     ftime_days, event_code, pm25_12m_zcta/no2_12m_zcta, age_10, sex,
 #     race_ethnicity, charlson_score, index_year_f, and ACS covariates.
 #
-# Event coding:
-#   0 = censored
+# Event coding among IMV patients:
 #   1 = successful extubation
 #   2 = death
 #   3 = persistent respiratory failure
@@ -66,6 +65,60 @@ analysis_df <- readr::read_csv(input_path, show_col_types = FALSE, progress = FA
   ) %>%
   filter(is.finite(ftime_days), ftime_days > 0, event_code %in% 0:3)
 
+competing_risk_diagnostics <- analysis_df %>%
+  summarise(
+    n_input = n(),
+    n_with_imv_after_arf = if ("has_imv_after_arf" %in% names(.)) sum(has_imv_after_arf %in% TRUE, na.rm = TRUE) else NA_integer_,
+    n_event_code_0_before_exhaustive_recode = sum(event_code == 0L, na.rm = TRUE),
+    n_imv_event_code_0_before_exhaustive_recode = if ("has_imv_after_arf" %in% names(.)) {
+      sum(has_imv_after_arf %in% TRUE & event_code == 0L, na.rm = TRUE)
+    } else {
+      NA_integer_
+    }
+  )
+
+if ("has_imv_after_arf" %in% names(analysis_df)) {
+  analysis_df <- analysis_df %>%
+    filter(has_imv_after_arf %in% TRUE) %>%
+    mutate(event_name = if ("event_name" %in% names(.)) as.character(event_name) else NA_character_) %>%
+    mutate(
+      event_code = if_else(event_code == 0L, 3L, event_code),
+      event_name = case_when(
+        event_code == 1L ~ "extubation",
+        event_code == 2L ~ "death",
+        event_code == 3L ~ "persistent_rf",
+        TRUE ~ event_name
+      )
+    )
+} else {
+  warning("Input has no `has_imv_after_arf` column; assuming all rows are eligible for the IMV competing-risk analysis.")
+  analysis_df <- analysis_df %>%
+    mutate(event_name = if ("event_name" %in% names(.)) as.character(event_name) else NA_character_) %>%
+    mutate(
+      event_code = if_else(event_code == 0L, 3L, event_code),
+      event_name = case_when(
+        event_code == 1L ~ "extubation",
+        event_code == 2L ~ "death",
+        event_code == 3L ~ "persistent_rf",
+        TRUE ~ event_name
+      )
+    )
+}
+
+competing_risk_diagnostics <- competing_risk_diagnostics %>%
+  mutate(
+    n_secondary_competing_risk = nrow(analysis_df),
+    n_event_code_0_after_exhaustive_recode = sum(analysis_df$event_code == 0L, na.rm = TRUE),
+    n_extubation = sum(analysis_df$event_code == 1L, na.rm = TRUE),
+    n_death = sum(analysis_df$event_code == 2L, na.rm = TRUE),
+    n_persistent_rf = sum(analysis_df$event_code == 3L, na.rm = TRUE)
+  )
+
+readr::write_csv(
+  competing_risk_diagnostics,
+  file.path(out_dir, "competing_risk_exhaustive_imv_assignment_diagnostics.csv")
+)
+
 site_name <- dplyr::first(stats::na.omit(analysis_df$site)) %||% "site"
 
 event_labels <- c(
@@ -119,7 +172,8 @@ aj_df <- bind_rows(lapply(seq_len(nrow(pollutants)), function(i) {
     filter(!is.na(exposure_quartile))
   ci <- cmprsk::cuminc(dat$ftime_days, dat$event_code, group = dat$exposure_quartile, cencode = 0)
   tidy_cuminc(ci, spec$pollutant)
-}))
+})) %>%
+  filter(time <= 28)
 
 readr::write_csv(aj_df, file.path(out_dir, "unadjusted_aalen_johansen_cif_by_exposure_quartile.csv"))
 
@@ -148,7 +202,7 @@ p_aj <- ggplot(aj_df, aes(time, cif, color = exposure_quartile)) +
   geom_step(linewidth = 0.9) +
   facet_grid(outcome ~ pollutant, scales = "free_y") +
   scale_color_manual(values = quartile_colors, drop = FALSE) +
-  scale_x_continuous(limits = c(0, 30), breaks = seq(0, 30, 7), expand = expansion(mult = c(0, 0.02))) +
+  scale_x_continuous(limits = c(0, 28), breaks = c(0, 7, 14, 21, 28), expand = expansion(mult = c(0, 0.02))) +
   scale_y_continuous(labels = percent_format(accuracy = 1), expand = expansion(mult = c(0, 0.06))) +
   labs(
     title = "Unadjusted Aalen-Johansen Cumulative Incidence by Exposure Quartile",

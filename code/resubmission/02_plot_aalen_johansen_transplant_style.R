@@ -103,15 +103,19 @@ cif_plot_data <- readr::read_csv(
     )
   ) %>%
   mutate(state = factor(state, levels = c("Extubation", "Death", "Persistent RF"))) %>%
-  filter(!is.na(quartile), !is.na(state))
+  filter(!is.na(quartile), !is.na(state), time <= 28)
 
 analysis_data <- readr::read_csv(
   file.path(out_root, "resubmission_analysis_dataset.csv"),
   show_col_types = FALSE
 )
 
+if ("has_imv_after_arf" %in% names(analysis_data)) {
+  analysis_data <- analysis_data %>% filter(has_imv_after_arf)
+}
+
 tick_times <- c(0, 7, 14, 21, 28)
-x_limits <- c(-2.5, 30)
+x_limits <- c(-2.5, 29.4)
 event_code_lookup <- tibble(
   state = factor(c("Extubation", "Death", "Persistent RF"), levels = c("Extubation", "Death", "Persistent RF")),
   event_code = c(1L, 2L, 3L)
@@ -179,7 +183,7 @@ make_curve_panel <- function(exposure_value, state_value, show_y_axis = TRUE) {
       expand = expansion(mult = c(0.015, 0.035))
     ) +
     labs(
-      title = state_value,
+      title = NULL,
       x = NULL,
       y = if (show_y_axis) "Cumulative incidence" else NULL,
       color = "Quartile"
@@ -189,7 +193,7 @@ make_curve_panel <- function(exposure_value, state_value, show_y_axis = TRUE) {
       axis.title.y = if (show_y_axis) element_text(size = 19) else element_blank(),
       axis.text.y = if (show_y_axis) element_text(size = 17, color = "grey20") else element_blank(),
       axis.ticks.y = if (show_y_axis) element_line(color = "black", linewidth = 0.35) else element_blank(),
-      plot.title = element_text(hjust = 0.5, margin = margin(b = 4), size = 22),
+      plot.title = element_blank(),
       legend.position = "bottom",
       plot.margin = margin(4, 8, 1, 8)
     )
@@ -210,13 +214,14 @@ make_table_panel <- function(exposure_value, state_value, show_x_axis = FALSE) {
       expand = expansion(mult = c(0.01, 0.01))
     ) +
     scale_y_discrete(labels = function(x) str_replace(x, " lowest| highest", "")) +
+    coord_cartesian(clip = "off") +
     labs(title = "Events / at risk", x = if (show_x_axis) "Days since ARF onset" else NULL, y = NULL) +
     theme_table_box() +
     theme(
       axis.text.x = if (show_x_axis) element_text(size = 16, color = "grey20", margin = margin(t = 2)) else element_blank(),
       axis.ticks.x = if (show_x_axis) element_line(color = "black", linewidth = 0.25) else element_blank(),
       legend.position = "none",
-      plot.margin = margin(1, 8, if (show_x_axis) 6 else 2, 8)
+      plot.margin = margin(1, 30, if (show_x_axis) 6 else 2, 8)
     )
 }
 
@@ -232,16 +237,27 @@ exposure_levels <- c("NO2", "PM2.5")
 make_column_header <- function(label_expr) {
   ggplot() +
     annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf, fill = NA, color = "grey45", linewidth = 0.55) +
-    annotate("text", x = 0.5, y = 0.5, label = label_expr, parse = TRUE, hjust = 0.5, vjust = 0.5, fontface = "bold", size = 6.4) +
+    annotate("text", x = 0.5, y = 0.42, label = label_expr, parse = TRUE, hjust = 0.5, vjust = 0.5, fontface = "bold", size = 6.4) +
     coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "off") +
     theme_void() +
-    theme(plot.margin = margin(6, 8, -14, 8))
+    theme(plot.margin = margin(12, 8, -18, 8))
+}
+
+make_row_header <- function(label_text) {
+  ggplot() +
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf, fill = NA, color = "grey45", linewidth = 0.55) +
+    annotate("text", x = 0.5, y = 0.5, label = label_text, angle = -90, hjust = 0.5, vjust = 0.5, fontface = "bold", size = 6.8) +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "off") +
+    theme_void() +
+    theme(plot.margin = margin(4, 8, 2, -2))
 }
 
 header_row <- wrap_plots(
   make_column_header("'Nitrogen dioxide'~(NO[2])"),
   make_column_header("'Fine particulate matter'~(PM[2.5])"),
-  nrow = 1
+  plot_spacer(),
+  nrow = 1,
+  widths = c(1, 1, 0.075)
 )
 
 row_plots <- lapply(seq_along(state_levels), function(i) {
@@ -249,7 +265,9 @@ row_plots <- lapply(seq_along(state_levels), function(i) {
   wrap_plots(
     make_cell(exposure_levels[[1]], state_value, show_y_axis = TRUE, show_x_axis = i == length(state_levels)),
     make_cell(exposure_levels[[2]], state_value, show_y_axis = FALSE, show_x_axis = i == length(state_levels)),
-    nrow = 1
+    make_row_header(state_value),
+    nrow = 1,
+    widths = c(1, 1, 0.075)
   )
 })
 
@@ -268,8 +286,8 @@ p_cif <- (header_row / wrap_plots(row_plots, ncol = 1)) +
 
 png_path <- file.path(fig_dir, "resubmission_aalen_johansen_cif_quartiles_transplant_style.png")
 pdf_path <- file.path(fig_dir, "resubmission_aalen_johansen_cif_quartiles_transplant_style.pdf")
-ggsave(png_path, p_cif, width = 20, height = 19, dpi = 300)
-ggsave(pdf_path, p_cif, width = 20, height = 19)
+ggsave(png_path, p_cif, width = 21, height = 19, dpi = 300)
+ggsave(pdf_path, p_cif, width = 21, height = 19)
 
 message("Wrote transplant-style AJ curves:")
 message(" - ", png_path)

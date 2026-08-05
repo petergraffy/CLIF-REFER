@@ -850,7 +850,10 @@ message("Constructing post-ARF competing-risk outcomes...")
 imv_records <- resp_support %>%
   inner_join(cohort %>% select(hospitalization_id, arf_onset, last_icu_out, discharge_dttm), by = "hospitalization_id") %>%
   filter(recorded_dttm >= arf_onset) %>%
-  mutate(is_imv = str_detect(device_category %||% "", "imv|invasive")) %>%
+  mutate(
+    is_imv = str_detect(device_category %||% "", "imv|invasive"),
+    is_trach = str_detect(device_category %||% "", "trach|tracheostomy")
+  ) %>%
   arrange(hospitalization_id, recorded_dttm)
 
 imv_runs <- imv_records %>%
@@ -933,7 +936,7 @@ vfd_outcomes <- cohort %>%
   )
 
 event_data <- cohort %>%
-  select(hospitalization_id, arf_onset, last_icu_out, discharge_dttm) %>%
+  select(hospitalization_id, arf_onset, last_icu_out, discharge_dttm, discharge_category) %>%
   left_join(death_times, by = "hospitalization_id") %>%
   mutate(
     administrative_censor = arf_onset + days(followup_days),
@@ -946,13 +949,52 @@ extubation_events <- imv_runs %>%
   group_by(hospitalization_id) %>%
   arrange(imv_start, .by_group = TRUE) %>%
   mutate(next_imv_start = lead(imv_start)) %>%
-  filter(
-    is.na(next_imv_start) | as.numeric(difftime(next_imv_start, imv_end, units = "hours")) >= successful_extubation_hours
+  ungroup() %>%
+  left_join(
+    imv_records %>%
+      filter(is_trach) %>%
+      select(hospitalization_id, trach_recorded_dttm = recorded_dttm),
+    by = "hospitalization_id",
+    relationship = "many-to-many"
   ) %>%
-  filter(imv_end + hours(successful_extubation_hours) <= censor_time) %>%
+  group_by(hospitalization_id, imv_start, imv_end) %>%
+  mutate(
+    home_discharge_within_stability_window = str_detect(discharge_category %||% "", "\\bhome\\b") &
+      !is.na(discharge_dttm) &
+      discharge_dttm >= imv_end &
+      discharge_dttm <= imv_end + hours(successful_extubation_hours),
+    trach_documented_after_extubation_before_discharge = any(
+      !is.na(trach_recorded_dttm) &
+        trach_recorded_dttm >= imv_end &
+        trach_recorded_dttm <= discharge_dttm,
+      na.rm = TRUE
+    ),
+    successful_extubation_by_observed_stability = (
+      is.na(next_imv_start) |
+        as.numeric(difftime(next_imv_start, imv_end, units = "hours")) >= successful_extubation_hours
+    ) &
+      imv_end + hours(successful_extubation_hours) <= censor_time,
+    successful_extubation_by_home_discharge = home_discharge_within_stability_window &
+      !trach_documented_after_extubation_before_discharge
+  ) %>%
+  ungroup() %>%
+  filter(
+    successful_extubation_by_observed_stability |
+      successful_extubation_by_home_discharge
+  ) %>%
+  group_by(hospitalization_id) %>%
+  arrange(imv_end, .by_group = TRUE) %>%
   slice(1) %>%
   ungroup() %>%
-  transmute(hospitalization_id, extubation_time = imv_end)
+  transmute(
+    hospitalization_id,
+    extubation_time = imv_end,
+    extubation_definition = if_else(
+      successful_extubation_by_home_discharge,
+      "home_discharge_without_trach_before_48h",
+      "observed_48h_without_reintubation"
+    )
+  )
 
 persistent_rf_events <- imv_runs %>%
   left_join(event_data, by = "hospitalization_id") %>%
@@ -962,12 +1004,29 @@ persistent_rf_events <- imv_runs %>%
   filter(!is.na(last_icu_out), imv_end >= last_icu_out - hours(imv_gap_hours), last_icu_out <= censor_time) %>%
   transmute(hospitalization_id, persistent_rf_time = last_icu_out)
 
+imv_competing_risk_cohort <- imv_days_through_vfd %>%
+  filter(has_imv_after_arf) %>%
+  distinct(hospitalization_id)
+
 events <- event_data %>%
+  left_join(imv_competing_risk_cohort %>% mutate(has_imv_after_arf_for_competing_risks = TRUE), by = "hospitalization_id") %>%
   left_join(extubation_events, by = "hospitalization_id") %>%
   left_join(persistent_rf_events, by = "hospitalization_id") %>%
+  mutate(
+    has_imv_after_arf_for_competing_risks = coalesce(has_imv_after_arf_for_competing_risks, FALSE),
+    persistent_rf_time = if_else(
+      has_imv_after_arf_for_competing_risks & is.na(persistent_rf_time),
+      censor_time,
+      persistent_rf_time
+    )
+  ) %>%
   rowwise() %>%
   mutate(
-    event_times = list(c(death = death_time, extubation = extubation_time, persistent_rf = persistent_rf_time)),
+    event_times = list(if (has_imv_after_arf_for_competing_risks) {
+      c(death = death_time, extubation = extubation_time, persistent_rf = persistent_rf_time)
+    } else {
+      c()
+    }),
     event_times = list(event_times[!is.na(event_times) & event_times <= censor_time]),
     event_name = if (length(event_times) == 0) "censor" else names(event_times)[which.min(event_times)],
     event_time = if (length(event_times) == 0) censor_time else min(event_times)
@@ -976,6 +1035,7 @@ events <- event_data %>%
   transmute(
     hospitalization_id,
     event_name,
+    extubation_definition,
     event_time = as.POSIXct(event_time, origin = "1970-01-01", tz = time_zone),
     ftime_days = as.numeric(difftime(event_time, arf_onset, units = "days")),
     event_code = case_when(
@@ -1787,6 +1847,7 @@ readr::write_csv(
 )
 
 message("Building unadjusted Aalen-Johansen CIFs...")
+aj_plot_days <- min(28, followup_days)
 make_cif_data <- function(data, exposure_group, exposure_label) {
   dat <- data %>%
     filter(!is.na(.data[[exposure_group]])) %>%
@@ -1826,7 +1887,8 @@ make_cif_data <- function(data, exposure_group, exposure_label) {
 cif_plot_data <- bind_rows(
   make_cif_data(analysis_df, "pm25_q", "PM2.5"),
   make_cif_data(analysis_df, "no2_q", "NO2")
-)
+) %>%
+  filter(time <= aj_plot_days)
 readr::write_csv(cif_plot_data, file.path(out_root, "resubmission_aalen_johansen_cif_plot_data.csv"))
 
 if (nrow(cif_plot_data)) {
@@ -1853,9 +1915,9 @@ if (nrow(cif_plot_data)) {
     facet_grid(state ~ exposure, scales = "free_y") +
     scale_color_manual(values = quartile_colors, drop = FALSE) +
     scale_x_continuous(
-      breaks = seq(0, followup_days, length.out = 5),
-      labels = scales::label_number(accuracy = 0.1, trim = TRUE),
-      limits = c(0, followup_days),
+      breaks = c(0, 7, 14, 21, aj_plot_days),
+      labels = scales::label_number(accuracy = 1, trim = TRUE),
+      limits = c(0, aj_plot_days),
       expand = expansion(mult = c(0.01, 0.01))
     ) +
     scale_y_continuous(labels = scales::label_percent(accuracy = 1)) +

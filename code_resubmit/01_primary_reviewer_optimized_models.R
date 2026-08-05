@@ -7,8 +7,10 @@
 #   this script to replace the first-run model block with the reviewer-focused models.
 #
 # Core changes from the first-run analysis:
-#   1. Replace logistic mortality models with Cox proportional hazards models.
-#   2. Use mortality after ARF onset when available; otherwise fall back to index admission.
+#   1. Use binary mortality by day 28 after ARF onset as the primary mortality
+#      endpoint.
+#   2. Keep Cox proportional hazards models for mortality after ARF onset as a
+#      sensitivity analysis.
 #   3. Replace invasive ventilation duration with ventilator-free days through day 28.
 #   4. Use the expanded adjustment set: demographics, calendar year, Charlson, and
 #      available social vulnerability covariates.
@@ -281,6 +283,37 @@ add_mortality_time <- function(df) {
     )
 }
 
+add_day28_mortality <- function(df) {
+  death_col <- first_present(df, c("death_time", "death_ts", "death_dttm_final", "death_dttm"))
+  out <- df
+  if (!is.na(death_col)) {
+    out <- out %>% mutate(death_time_day28 = safe_ts(.data[[death_col]]))
+  } else {
+    out <- out %>% mutate(death_time_day28 = as.POSIXct(NA_real_, origin = "1970-01-01", tz = Sys.timezone()))
+  }
+
+  out %>%
+    mutate(
+      mortality_day28_event = as.integer(
+        (
+          !is.na(death_time_day28) &
+            death_time_day28 >= t0 &
+            death_time_day28 <= t0 + lubridate::days(28)
+        ) |
+          (
+            mortality_event == 1L &
+              !is.na(mortality_ftime_days) &
+              mortality_ftime_days <= 28
+          )
+      ),
+      alive_or_censored_before_day28 = as.integer(
+        mortality_day28_event == 0L &
+          !is.na(mortality_ftime_days) &
+          mortality_ftime_days < 28
+      )
+    )
+}
+
 fallback_vfd_from_vent_hours <- function(df) {
   vent_hours <- if ("vent_hours" %in% names(df)) as.numeric(df$vent_hours) else rep(0, nrow(df))
   df %>%
@@ -425,6 +458,24 @@ tidy_cox <- function(fit, model_df, exposure_terms, model_label, covars) {
     )
 }
 
+tidy_logistic <- function(fit, model_df, exposure_terms, model_label, covars) {
+  broom::tidy(fit, exponentiate = TRUE, conf.int = TRUE) %>%
+    filter(term %in% exposure_terms) %>%
+    transmute(
+      site = site_name,
+      outcome = "Mortality by day 28 after ARF onset",
+      model = model_label,
+      term,
+      n = nrow(model_df),
+      events = sum(model_df$mortality_day28_event == 1L),
+      odds_ratio = estimate,
+      conf_low = conf.low,
+      conf_high = conf.high,
+      p_value = p.value,
+      adjustment_set = paste(setdiff(covars, exposure_terms), collapse = " + ")
+    )
+}
+
 tidy_vfd <- function(fit, model_df, exposure_terms, model_label, covars) {
   broom::tidy(fit) %>%
     filter(term %in% exposure_terms) %>%
@@ -463,6 +514,24 @@ fit_cox_model <- function(df, exposure_terms, model_label, adjustment_covars) {
   list(fit = fit, model_df = model_df, exposure_terms = exposure_terms, model_label = model_label, covars = covars)
 }
 
+fit_logistic_model <- function(df, exposure_terms, model_label, adjustment_covars) {
+  covars <- c(exposure_terms, adjustment_covars)
+  model_df <- df %>%
+    dplyr::select(mortality_day28_event, all_of(covars)) %>%
+    drop_na()
+  covars <- drop_uninformative_covars(model_df, covars, exposure_terms)
+  model_df <- model_df %>%
+    dplyr::select(mortality_day28_event, all_of(covars))
+
+  fit <- stats::glm(
+    as.formula(paste0("mortality_day28_event ~ ", paste(covars, collapse = " + "))),
+    data = model_df,
+    family = binomial(link = "logit")
+  )
+
+  list(fit = fit, model_df = model_df, exposure_terms = exposure_terms, model_label = model_label, covars = covars)
+}
+
 fit_vfd_model <- function(df, exposure_terms, model_label, adjustment_covars) {
   covars <- c(exposure_terms, adjustment_covars)
   model_df <- df %>%
@@ -484,6 +553,7 @@ fit_vfd_model <- function(df, exposure_terms, model_label, adjustment_covars) {
 analysis_df <- arf_exp %>%
   coerce_analysis_frame() %>%
   add_mortality_time() %>%
+  add_day28_mortality() %>%
   ensure_scaled_social_covars() %>%
   add_vfd()
 
@@ -502,6 +572,11 @@ model_specs <- list(
   list(exposure_terms = c("pm25_per_5", "no2_per_10"), model_label = "PM25 + NO2")
 )
 
+logistic_fits <- purrr::map(
+  model_specs,
+  ~ fit_logistic_model(analysis_df, .x$exposure_terms, .x$model_label, adjustment_covars)
+)
+
 cox_fits <- purrr::map(
   model_specs,
   ~ fit_cox_model(analysis_df, .x$exposure_terms, .x$model_label, adjustment_covars)
@@ -512,6 +587,7 @@ vfd_fits <- purrr::map(
   ~ fit_vfd_model(analysis_df, .x$exposure_terms, .x$model_label, adjustment_covars)
 )
 
+logistic_results <- purrr::map_dfr(logistic_fits, ~ tidy_logistic(.x$fit, .x$model_df, .x$exposure_terms, .x$model_label, .x$covars))
 cox_results <- purrr::map_dfr(cox_fits, ~ tidy_cox(.x$fit, .x$model_df, .x$exposure_terms, .x$model_label, .x$covars))
 vfd_results <- purrr::map_dfr(vfd_fits, ~ tidy_vfd(.x$fit, .x$model_df, .x$exposure_terms, .x$model_label, .x$covars))
 
@@ -539,6 +615,8 @@ cohort_summary <- tibble(
   n_arf = nrow(analysis_df),
   n_patients = n_distinct(analysis_df$patient_id),
   mortality_events = sum(analysis_df$mortality_event == 1L, na.rm = TRUE),
+  mortality_day28_events = sum(analysis_df$mortality_day28_event == 1L, na.rm = TRUE),
+  alive_or_censored_before_day28 = sum(analysis_df$alive_or_censored_before_day28 == 1L, na.rm = TRUE),
   median_mortality_followup_days = median(analysis_df$mortality_ftime_days, na.rm = TRUE),
   mean_vfd = mean(analysis_df$ventilator_free_days, na.rm = TRUE),
   median_vfd = median(analysis_df$ventilator_free_days, na.rm = TRUE),
@@ -552,12 +630,14 @@ cohort_summary <- tibble(
 
 readr::write_csv(analysis_df, file.path(out_dir, "analysis_dataset_reviewer_optimized.csv"))
 readr::write_csv(cohort_summary, file.path(out_dir, "cohort_summary_reviewer_optimized.csv"))
+readr::write_csv(logistic_results, file.path(out_dir, "primary_mortality_day28_logistic_results.csv"))
 readr::write_csv(cox_results, file.path(out_dir, "primary_mortality_cox_results.csv"))
 readr::write_csv(ph_results, file.path(out_dir, "primary_mortality_cox_ph_diagnostics.csv"))
 readr::write_csv(vfd_results, file.path(out_dir, "primary_vfd_quasipoisson_results.csv"))
 
 message("Wrote reviewer-optimized primary outputs:")
 message(" - ", file.path(out_dir, "cohort_summary_reviewer_optimized.csv"))
+message(" - ", file.path(out_dir, "primary_mortality_day28_logistic_results.csv"))
 message(" - ", file.path(out_dir, "primary_mortality_cox_results.csv"))
 message(" - ", file.path(out_dir, "primary_mortality_cox_ph_diagnostics.csv"))
 message(" - ", file.path(out_dir, "primary_vfd_quasipoisson_results.csv"))

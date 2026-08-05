@@ -31,13 +31,16 @@ suppressPackageStartupMessages({
 
 args <- commandArgs(trailingOnly = TRUE)
 if (!length(args) || !file.exists(args[[1]])) {
-  stop("Usage: Rscript code_resubmit/03_exposure_response_primary_models.R <analysis_dataset.csv> [output_dir]")
+  stop("Usage: Rscript code/resubmission/03_exposure_response_primary_models.R <analysis_dataset.csv> [output_dir]")
+}
+arg_or <- function(i, default = NA_character_) {
+  if (length(args) >= i && nzchar(args[[i]])) args[[i]] else default
 }
 
 input_path <- normalizePath(args[[1]], mustWork = TRUE)
 repo <- normalizePath(file.path(dirname(input_path), "..", ".."), mustWork = FALSE)
 run_id <- format(Sys.time(), "%Y%m%d_%H%M%S")
-out_dir <- args[[2]] %||% file.path(repo, "output", "code_resubmit", run_id)
+out_dir <- arg_or(2, file.path(repo, "output", "resubmission", run_id))
 fig_dir <- file.path(out_dir, "figures")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
@@ -363,8 +366,8 @@ make_separate_rug_panel <- function(rugs, group_col, palette_values, pollutant_v
     theme_classic(base_size = 11) +
     theme(
       axis.text.y = element_text(size = 9),
-      axis.text.x = element_blank(),
-      axis.ticks.x = element_blank(),
+      axis.text.x = element_text(size = 10, color = "grey20"),
+      axis.ticks.x = element_line(color = "black", linewidth = 0.25),
       axis.ticks.y = element_blank(),
       axis.title.x = element_text(size = 13),
       plot.margin = margin(0, 5.5, 5.5, 5.5),

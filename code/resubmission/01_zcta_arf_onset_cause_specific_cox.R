@@ -78,7 +78,10 @@ successful_extubation_hours <- as.numeric(config$successful_extubation_hours %||
 primary_min_icu_los_hours <- as.numeric(config$primary_min_icu_los_hours %||% 24)
 
 stamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
-out_root <- file.path(repo, config$output_dir %||% "output/resubmission", stamp)
+out_root <- Sys.getenv(
+  "REFER_RESUBMISSION_OUTPUT_DIR",
+  file.path(repo, config$output_dir %||% "output/resubmission", stamp)
+)
 fig_dir <- file.path(out_root, "figures")
 dir.create(out_root, recursive = TRUE, showWarnings = FALSE)
 dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
@@ -896,43 +899,61 @@ primary_mortality_outcomes <- cohort %>%
   ) %>%
   select(hospitalization_id, mortality_event, mortality_end_time, mortality_ftime_days)
 
-imv_days_through_vfd <- imv_runs %>%
-  left_join(cohort %>% select(hospitalization_id, arf_onset), by = "hospitalization_id") %>%
-  mutate(
-    vfd_end = arf_onset + days(vfd_days),
-    run_start = pmax(imv_start, arf_onset, na.rm = TRUE),
-    run_end = pmin(imv_end + hours(imv_gap_hours), vfd_end, na.rm = TRUE),
-    imv_days = pmax(as.numeric(difftime(run_end, run_start, units = "days")), 0)
-  ) %>%
-  filter(is.finite(imv_days), imv_days > 0) %>%
-  group_by(hospitalization_id) %>%
-  summarise(
-    imv_days_through_vfd = sum(imv_days, na.rm = TRUE),
-    has_imv_after_arf = TRUE,
-    .groups = "drop"
-  )
+summarise_imv_days <- function(horizon_days, output_col) {
+  imv_runs %>%
+    left_join(cohort %>% select(hospitalization_id, arf_onset), by = "hospitalization_id") %>%
+    mutate(
+      vfd_end = arf_onset + days(horizon_days),
+      run_start = pmax(imv_start, arf_onset, na.rm = TRUE),
+      run_end = pmin(imv_end + hours(imv_gap_hours), vfd_end, na.rm = TRUE),
+      imv_days = pmax(as.numeric(difftime(run_end, run_start, units = "days")), 0)
+    ) %>%
+    filter(is.finite(imv_days), imv_days > 0) %>%
+    group_by(hospitalization_id) %>%
+    summarise(
+      "{output_col}" := sum(imv_days, na.rm = TRUE),
+      has_imv_after_arf = TRUE,
+      .groups = "drop"
+    )
+}
+
+imv_days_through_vfd <- summarise_imv_days(vfd_days, "imv_days_through_vfd")
+imv_days_through_day14 <- summarise_imv_days(14, "imv_days_through_day14") %>%
+  select(hospitalization_id, imv_days_through_day14)
 
 vfd_outcomes <- cohort %>%
   select(hospitalization_id, arf_onset) %>%
   left_join(death_times, by = "hospitalization_id") %>%
   left_join(imv_days_through_vfd, by = "hospitalization_id") %>%
+  left_join(imv_days_through_day14, by = "hospitalization_id") %>%
   mutate(
     imv_days_through_vfd = coalesce(imv_days_through_vfd, 0),
+    imv_days_through_day14 = coalesce(imv_days_through_day14, 0),
     has_imv_after_arf = coalesce(has_imv_after_arf, FALSE),
     died_before_vfd_horizon = !is.na(death_time) & death_time <= arf_onset + days(vfd_days),
+    died_before_vfd_day14 = !is.na(death_time) & death_time <= arf_onset + days(14),
     ventilator_free_days = if_else(
       died_before_vfd_horizon,
       0,
       pmax(vfd_days - imv_days_through_vfd, 0)
     ),
-    ventilator_free_days = pmin(ventilator_free_days, vfd_days)
+    ventilator_free_days = pmin(ventilator_free_days, vfd_days),
+    ventilator_free_days_day14 = if_else(
+      died_before_vfd_day14,
+      0,
+      pmax(14 - imv_days_through_day14, 0)
+    ),
+    ventilator_free_days_day14 = pmin(ventilator_free_days_day14, 14)
   ) %>%
   select(
     hospitalization_id,
     has_imv_after_arf,
     imv_days_through_vfd,
+    imv_days_through_day14,
     died_before_vfd_horizon,
-    ventilator_free_days
+    died_before_vfd_day14,
+    ventilator_free_days,
+    ventilator_free_days_day14
   )
 
 event_data <- cohort %>%

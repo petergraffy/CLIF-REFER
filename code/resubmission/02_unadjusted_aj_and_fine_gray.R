@@ -35,13 +35,16 @@ suppressPackageStartupMessages({
 
 args <- commandArgs(trailingOnly = TRUE)
 if (!length(args) || !file.exists(args[[1]])) {
-  stop("Usage: Rscript code_resubmit/02_unadjusted_aj_and_fine_gray.R <analysis_dataset.csv> [output_dir]")
+  stop("Usage: Rscript code/resubmission/02_unadjusted_aj_and_fine_gray.R <analysis_dataset.csv> [output_dir]")
+}
+arg_or <- function(i, default = NA_character_) {
+  if (length(args) >= i && nzchar(args[[i]])) args[[i]] else default
 }
 
 input_path <- normalizePath(args[[1]], mustWork = TRUE)
 repo <- normalizePath(file.path(dirname(input_path), "..", ".."), mustWork = FALSE)
 run_id <- format(Sys.time(), "%Y%m%d_%H%M%S")
-out_dir <- args[[2]] %||% file.path(repo, "output", "code_resubmit", run_id)
+out_dir <- arg_or(2, file.path(repo, "output", "resubmission", run_id))
 fig_dir <- file.path(out_dir, "figures")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
@@ -265,7 +268,7 @@ fit_fgr <- function(df, cause_code, exposure_terms, model_label) {
     )
   covars <- drop_uninformative_covars(model_df, covars, exposure_terms)
   model_df <- model_df %>%
-    dplyr::select(ftime_days, event, all_of(covars))
+    dplyr::select(ftime_days, event_code, event, all_of(covars))
 
   fg_df <- survival::finegray(
     as.formula(paste0("Surv(ftime_days, event) ~ ", paste(covars, collapse = " + "))),
@@ -277,7 +280,8 @@ fit_fgr <- function(df, cause_code, exposure_terms, model_label) {
     as.formula(paste0("Surv(fgstart, fgstop, fgstatus) ~ ", paste(covars, collapse = " + "))),
     data = fg_df,
     weights = fgwt,
-    ties = "efron"
+    ties = "efron",
+    x = TRUE
   )
 
   broom::tidy(fit, exponentiate = TRUE, conf.int = TRUE) %>%
@@ -312,7 +316,7 @@ fit_fgr_object <- function(df, cause_code, exposure_terms, model_label) {
     )
   covars <- drop_uninformative_covars(model_df, covars, exposure_terms)
   model_df <- model_df %>%
-    dplyr::select(ftime_days, event, all_of(covars))
+    dplyr::select(ftime_days, event_code, event, all_of(covars))
 
   fg_df <- survival::finegray(
     as.formula(paste0("Surv(ftime_days, event) ~ ", paste(covars, collapse = " + "))),
@@ -324,17 +328,121 @@ fit_fgr_object <- function(df, cause_code, exposure_terms, model_label) {
     as.formula(paste0("Surv(fgstart, fgstop, fgstatus) ~ ", paste(covars, collapse = " + "))),
     data = fg_df,
     weights = fgwt,
-    ties = "efron"
+    ties = "efron",
+    x = TRUE
   )
 
   list(
     fit = fit,
+    fg_df = fg_df,
     model_df = model_df,
     covars = covars,
+    exposure_terms = exposure_terms,
     cause_code = cause_code,
     outcome_label = outcome_label,
     model_label = model_label
   )
+}
+
+tidy_fg_ph_zph <- function(fit_obj, transform = "km") {
+  zph <- tryCatch(
+    survival::cox.zph(fit_obj$fit, transform = transform, terms = TRUE),
+    error = function(e) {
+      warning("cox.zph failed for ", fit_obj$outcome_label, " / ", fit_obj$model_label, ": ", conditionMessage(e))
+      NULL
+    }
+  )
+  if (is.null(zph)) return(tibble())
+
+  as_tibble(zph$table, rownames = "term") %>%
+    transmute(
+      site = site_name,
+      outcome = fit_obj$outcome_label,
+      model = fit_obj$model_label,
+      diagnostic = "cox.zph scaled Schoenfeld residual test",
+      time_transform = transform,
+      term,
+      chisq,
+      df = if ("df" %in% names(.)) df else NA_real_,
+      p_value = p,
+      term_type = case_when(
+        term %in% fit_obj$exposure_terms ~ "exposure",
+        term == "GLOBAL" ~ "global",
+        TRUE ~ "covariate"
+      ),
+      n = nrow(fit_obj$model_df),
+      events = sum(fit_obj$model_df$event == fit_obj$outcome_label),
+      adjustment_set = paste(setdiff(fit_obj$covars, fit_obj$exposure_terms), collapse = " + ")
+    )
+}
+
+full_rank_model_matrix <- function(model_df, covars) {
+  mm <- stats::model.matrix(
+    stats::as.formula(paste("~", paste(covars, collapse = " + "))),
+    data = model_df
+  )
+  mm <- mm[, colnames(mm) != "(Intercept)", drop = FALSE]
+  if (!ncol(mm)) return(mm)
+
+  keep <- apply(mm, 2, function(x) isTRUE(stats::var(as.numeric(x), na.rm = TRUE) > 0))
+  mm <- mm[, keep, drop = FALSE]
+  if (!ncol(mm)) return(mm)
+
+  qr_mm <- qr(mm)
+  mm[, qr_mm$pivot[seq_len(qr_mm$rank)], drop = FALSE]
+}
+
+fit_fg_time_interaction <- function(fit_obj, time_transform = "log_time") {
+  eps <- 1 / 24
+  cov1 <- full_rank_model_matrix(fit_obj$model_df, fit_obj$covars)
+
+  bind_rows(lapply(fit_obj$exposure_terms, function(exposure_term) {
+    cov2 <- as.matrix(fit_obj$model_df[, exposure_term, drop = FALSE])
+    fit <- tryCatch(
+      cmprsk::crr(
+        ftime = fit_obj$model_df$ftime_days,
+        fstatus = fit_obj$model_df$event_code,
+        cov1 = cov1,
+        cov2 = cov2,
+        tf = function(uft) log(pmax(uft, eps)),
+        failcode = fit_obj$cause_code,
+        cencode = 0
+      ),
+      error = function(e) {
+        warning("Fine-Gray time-interaction diagnostic failed for ", fit_obj$outcome_label, " / ", fit_obj$model_label, " / ", exposure_term, ": ", conditionMessage(e))
+        NULL
+      }
+    )
+    if (is.null(fit)) return(tibble())
+
+    coef_tbl <- tibble(
+      term = names(fit$coef),
+      beta = unname(fit$coef),
+      std_error = sqrt(diag(fit$var)),
+      statistic = beta / std_error,
+      p_value = 2 * stats::pnorm(abs(statistic), lower.tail = FALSE)
+    )
+
+    time_term <- paste0(exposure_term, "*tf1")
+    coef_tbl %>%
+      filter(.data$term == time_term) %>%
+      transmute(
+      site = site_name,
+      outcome = fit_obj$outcome_label,
+      model = fit_obj$model_label,
+        diagnostic = "Fine-Gray exposure by log(time) interaction",
+      time_transform = time_transform,
+      exposure_term,
+      interaction_term = term,
+      beta,
+      std_error,
+      statistic,
+      p_value,
+      n = nrow(fit_obj$model_df),
+      events = sum(fit_obj$model_df$event == fit_obj$outcome_label),
+      adjustment_set = paste(setdiff(fit_obj$covars, fit_obj$exposure_terms), collapse = " + ")
+      )
+  }))
 }
 
 typical_value <- function(x) {
@@ -415,6 +523,12 @@ fg_specs <- list(
   list(exposure_terms = c("pm25_per_5", "no2_per_10"), model_label = "PM25 + NO2")
 )
 
+fg_fit_objects <- unlist(lapply(1:3, function(cause_code) {
+  lapply(fg_specs, function(spec) {
+    fit_fgr_object(analysis_df, cause_code, spec$exposure_terms, spec$model_label)
+  })
+}), recursive = FALSE)
+
 fine_gray_results <- bind_rows(lapply(1:3, function(cause_code) {
   bind_rows(lapply(fg_specs, function(spec) {
     fit_fgr(analysis_df, cause_code, spec$exposure_terms, spec$model_label)
@@ -422,6 +536,29 @@ fine_gray_results <- bind_rows(lapply(1:3, function(cause_code) {
 }))
 
 readr::write_csv(fine_gray_results, file.path(out_dir, "fine_gray_results_same_covariates_as_cox.csv"))
+
+fine_gray_ph_diagnostics <- bind_rows(lapply(fg_fit_objects, tidy_fg_ph_zph)) %>%
+  arrange(outcome, model, desc(term_type == "global"), desc(term_type == "exposure"), term)
+
+fine_gray_ph_time_interactions <- bind_rows(lapply(fg_fit_objects, fit_fg_time_interaction)) %>%
+  arrange(outcome, model, exposure_term)
+
+fine_gray_ph_diagnostics_summary <- fine_gray_ph_diagnostics %>%
+  filter(term_type %in% c("exposure", "global")) %>%
+  select(site, outcome, model, diagnostic, time_transform, term, term_type, n, events, chisq, df, p_value)
+
+readr::write_csv(
+  fine_gray_ph_diagnostics,
+  file.path(out_dir, "fine_gray_ph_diagnostics_cox_zph.csv")
+)
+readr::write_csv(
+  fine_gray_ph_time_interactions,
+  file.path(out_dir, "fine_gray_ph_time_interaction_diagnostics.csv")
+)
+readr::write_csv(
+  fine_gray_ph_diagnostics_summary,
+  file.path(out_dir, "fine_gray_ph_diagnostics_summary_for_pooling.csv")
+)
 
 fg_cif_predictions <- bind_rows(lapply(seq_len(nrow(pollutants)), function(i) {
   spec <- pollutants[i, ]
@@ -524,10 +661,10 @@ make_fg_curve_panel <- function(pollutant_value, outcome_value, show_y_axis = TR
 make_fg_column_header <- function(label_expr) {
   ggplot() +
     annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf, fill = NA, color = "grey45", linewidth = 0.55) +
-    annotate("text", x = 0.5, y = 0.42, label = label_expr, parse = TRUE, hjust = 0.5, vjust = 0.5, fontface = "bold", size = 6.4) +
+    annotate("text", x = 0.5, y = 0.5, label = label_expr, parse = TRUE, hjust = 0.5, vjust = 0.5, fontface = "bold", size = 6.4) +
     coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "off") +
     theme_void() +
-    theme(plot.margin = margin(12, 8, -18, 8))
+    theme(plot.margin = margin(8, 8, -8, 8))
 }
 
 make_fg_row_header <- function(label_text) {
@@ -562,7 +699,7 @@ fg_row_plots <- lapply(seq_along(fg_outcome_levels), function(i) {
 })
 
 p_fg_cif <- (fg_header_row / wrap_plots(fg_row_plots, ncol = 1)) +
-  plot_layout(heights = c(0.075, 3), guides = "collect") +
+  plot_layout(heights = c(0.11, 3), guides = "collect") +
   plot_annotation(
     theme = theme(
       legend.position = "bottom",
@@ -572,8 +709,8 @@ p_fg_cif <- (fg_header_row / wrap_plots(fg_row_plots, ncol = 1)) +
   ) &
   theme(legend.position = "bottom")
 
-ggsave(file.path(fig_dir, "fine_gray_adjusted_cif_by_exposure_quartile.png"), p_fg_cif, width = 21, height = 14, dpi = 300)
-ggsave(file.path(fig_dir, "fine_gray_adjusted_cif_by_exposure_quartile.pdf"), p_fg_cif, width = 21, height = 14)
+ggsave(file.path(fig_dir, "fine_gray_adjusted_cif_by_exposure_quartile.png"), p_fg_cif, width = 21, height = 19, dpi = 300)
+ggsave(file.path(fig_dir, "fine_gray_adjusted_cif_by_exposure_quartile.pdf"), p_fg_cif, width = 21, height = 19)
 
 message("Wrote outputs:")
 message(" - ", file.path(out_dir, "unadjusted_aalen_johansen_cif_by_exposure_quartile.csv"))

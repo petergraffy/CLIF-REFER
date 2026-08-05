@@ -1,105 +1,131 @@
-# Resubmission Analysis
+# REFER Resubmission Primary Analysis
 
-This folder contains the reviewer-responsive analysis framework for the REFER
-air-pollution resubmission.
+This folder is a cleaner, reviewer-focused replacement for the original first-run model block in `code/02_REFER_linkage_analysis.R`.
 
-## Goal
+The goal is not to expand the analysis in every direction. It implements only the main changes implied by the reviewer feedback:
 
-The analysis changes the estimand from the original county-level cumulative
-exposure/outcome regression workflow to:
+1. Use mortality by day 28 after ARF onset as the primary binary mortality estimand.
+2. Keep Cox proportional hazards models for mortality after ARF onset as a sensitivity analysis.
+3. Replace raw invasive ventilation duration with ventilator-free days through day 28.
+4. Use the stronger covariate set now available: age, sex, race/ethnicity, calendar year, Charlson score, and available ACS/social vulnerability covariates.
+5. Add a COVID-era sensitivity analysis excluding the 12-month period most affected by early pandemic care disruptions.
 
-- fixed pre-ARF exposure interval
-- ZCTA-level PM2.5, NO2, and O3 exposure assignment
-- ARF onset as time zero
-- primary cohort requiring ICU length of stay of at least 24 hours
-- primary Cox proportional hazards models for mortality after ARF onset
-- secondary quasi-Poisson models for ventilator-free days through day 28
-- secondary cause-specific Cox proportional hazards models among competing
-  post-ARF respiratory outcomes
-- baseline comorbidity adjustment with Charlson score
-- ZCTA-level ACS social vulnerability adjustment
-- unadjusted Aalen-Johansen cumulative incidence curves for death,
-  successful extubation, and persistent respiratory failure
+## Main Script
 
-## Inputs
+`00_run_full_resubmission_pipeline.R`
 
-The script expects the same local CLIF tables used by the main project plus
-ZCTA air-pollution parquet files.
-
-Copy `resubmission_config_template.json` to `resubmission_config.json` and edit
-the paths. The ZCTA exposure files can come from the transplant/pollution release:
-
-- `air_pollution_zcta_pm25_monthly_2005_2023.parquet`
-- `air_pollution_zcta_o3_monthly_2005_2023.parquet`
-- `no2_zcta_monthly_YYYY.parquet` files from
-  <https://github.com/petergraffy/environment_transplant_survival/releases/tag/no2-zcta-monthly-v1>
-- `zcta_acs_community_covariates_2005_2023.csv.gz` from the transplant
-  project community covariate build
-
-PM2.5, O3, and NO2 are averaged across the 12 complete months before ARF onset
-when monthly data are available. The monthly NO2 release starts in 2019;
-encounters without a complete 12-month pre-onset monthly NO2 window use the
-annual prior-year ZCTA NO2 file as a fallback. If monthly NO2 files are not
-found, all NO2 analyses use annual prior-year ZCTA NO2.
-
-Primary mortality Cox models and secondary ventilator-free-day models adjust
-for age, sex, race/ethnicity, Charlson score, index year, and ZCTA ACS
-variables for poverty, unemployment, no vehicle access, non-White population,
-median household income, and bachelor-or-higher educational attainment. A
-separate sensitivity model also adjusts for total SOFA score calculated during
-the first 24 hours of ICU admission. Proportional hazards diagnostics for the
-primary mortality Cox models are calculated with scaled Schoenfeld residual
-tests. Generalized variance inflation factors are also calculated for the
-cause-specific Cox model covariate sets.
-
-An additional multipollutant sensitivity model repeats the primary
-mortality and ventilator-free-day models with 12-month pre-ARF ZCTA O3
-exposure added to the PM2.5 and NO2 exposure terms.
-
-To evaluate pandemic-era disruption, another sensitivity analysis excludes ARF
-onsets during the 12-month period from March 1, 2020 through February 28, 2021
-and repeats the primary mortality and ventilator-free-day models.
-
-To address possible bias from excluding short ICU stays, the script also writes
-a no-ICU-length-of-stay-restriction sensitivity cohort and repeats the primary
-cause-specific Cox models in that secondary cohort.
-
-## Run
-
-From the repository root:
+This is the site-facing one-command runner. With no arguments, it first builds
+the ARF cohorts from raw CLIF/ZCTA data using the resubmission cohort builder,
+then runs every primary, secondary, sensitivity, figure, diagnostic, and
+aggregate export into one timestamped folder:
 
 ```sh
-Rscript code/resubmission/01_zcta_arf_onset_cause_specific_cox.R
+Rscript code/resubmission/00_run_full_resubmission_pipeline.R
 ```
 
-Outputs are written to `output/resubmission/<timestamp>/` by default:
+For development or reruns from an existing cohort export:
 
-- `resubmission_analysis_dataset.csv`
-- `resubmission_analysis_dataset_no_icu_los_restriction.csv`
-- `resubmission_analysis_dataset_no_peak_covid.csv`
-- `resubmission_primary_mortality_cox_results.csv`
-- `resubmission_primary_mortality_cox_results_by_arf_subtype.csv`
-- `resubmission_primary_mortality_cox_exposure_by_arf_subtype_interactions.csv`
-- `resubmission_primary_mortality_cox_ph_diagnostics.csv`
-- `resubmission_primary_mortality_cox_results_sofa_sensitivity.csv`
-- `resubmission_primary_mortality_cox_results_no_peak_covid.csv`
-- `resubmission_primary_mortality_cox_results_o3_sensitivity.csv`
-- `resubmission_primary_ventilator_free_days_results.csv`
-- `resubmission_primary_ventilator_free_days_results_by_arf_subtype.csv`
-- `resubmission_primary_ventilator_free_days_exposure_by_arf_subtype_interactions.csv`
-- `resubmission_primary_ventilator_free_days_results_sofa_sensitivity.csv`
-- `resubmission_primary_ventilator_free_days_results_no_peak_covid.csv`
-- `resubmission_primary_ventilator_free_days_results_o3_sensitivity.csv`
-- `resubmission_primary_by_arf_subtype_summary.csv`
-- `resubmission_primary_exposure_response_by_arf_subtype_predictions.csv`
-- `resubmission_cause_specific_cox_results.csv`
-- `resubmission_cause_specific_cox_ph_diagnostics.csv`
-- `resubmission_cause_specific_cox_vif_diagnostics.csv`
-- `resubmission_cause_specific_cox_results_arf_subtype_sensitivity.csv`
-- `resubmission_cause_specific_cox_results_sofa_sensitivity.csv`
-- `resubmission_cause_specific_cox_results_no_icu_los_restriction.csv`
-- `resubmission_cause_specific_cox_results_no_peak_covid.csv`
-- `resubmission_cause_specific_cox_results_o3_sensitivity.csv`
-- `resubmission_aalen_johansen_cif_plot_data.csv`
-- `resubmission_aalen_johansen_cif_quartiles.png`
-- `resubmission_cohort_summary.csv`
+```sh
+Rscript code/resubmission/00_run_full_resubmission_pipeline.R \
+  output/resubmission/<run>/resubmission_analysis_dataset.csv \
+  output/resubmission/<run>/resubmission_analysis_dataset_no_icu_los_restriction.csv
+```
+
+`01_primary_reviewer_optimized_models.R`
+
+This script assumes the original cohort/linkage workflow has already constructed `arf_exp`. If available, it also uses:
+
+- `support_class` to compute ventilator-free days from invasive mechanical ventilation records
+- `diagnosis` to calculate Charlson score when `charlson_score` is not already present
+- `patient` to recover death time when `arf_exp` does not already include one
+
+The script writes outputs to:
+
+`output/resubmission/<timestamp>/`
+
+`06_primary_sensitivity_models.R`
+
+This script reads the reviewer-optimized analysis dataset and exports poolable
+site-level sensitivity model results for: adding first-24-hour SOFA total,
+removing the ICU length-of-stay restriction when a companion dataset is
+available, adding O3 as a copollutant, using a 36-month exposure window, and
+using a 14-day follow-up window.
+
+The 14-day VFD sensitivity requires exact `ventilator_free_days_day14` or
+`imv_days_through_day14` fields. The primary dataset builder now creates these
+when raw respiratory support data are available; otherwise the sensitivity
+status file marks the VFD component as partial rather than imputing it.
+
+## Primary Models
+
+Primary mortality model:
+
+```r
+mortality_day28_event ~
+  exposure +
+  age_10 + sex + race_ethnicity + charlson_score + index_year_f +
+  social_covariates
+```
+
+Cox sensitivity model:
+
+```r
+Surv(mortality_ftime_days, mortality_event) ~
+  exposure +
+  age_10 + sex + race_ethnicity + charlson_score + index_year_f +
+  social_covariates
+```
+
+VFD model:
+
+```r
+ventilator_free_days ~
+  exposure +
+  age_10 + sex + race_ethnicity + charlson_score + index_year_f +
+  social_covariates
+```
+
+Exposure models are run as:
+
+- PM2.5 single-pollutant, scaled per 5 ug/m3
+- NO2 single-pollutant, scaled per 10 ppb
+- PM2.5 + NO2 multipollutant model
+
+## COVID Sensitivity
+
+The primary script also reruns the primary model set after excluding ARF onset dates from March 1, 2020 through February 28, 2021. Sites can override the window with environment variables:
+
+```sh
+REFER_COVID_EXCLUDE_START=2020-03-01
+REFER_COVID_EXCLUDE_END=2021-02-28
+```
+
+This sensitivity exports site-level, poolable result tables only; no patient-level data are required for cross-site pooling.
+
+## Output Files
+
+- `analysis_dataset_reviewer_optimized.csv`
+- `cohort_summary_reviewer_optimized.csv`
+- `primary_mortality_day28_logistic_results.csv`
+- `primary_mortality_cox_results.csv`
+- `primary_mortality_cox_ph_diagnostics.csv`
+- `primary_vfd_quasipoisson_results.csv`
+- `primary_vfd_model_diagnostics.csv`
+- `primary_vfd_poisson_vs_quasipoisson_diagnostics.csv`
+- `primary_vfd_calibration_by_fitted_decile.csv`
+- `sensitivity_exclude_peak_covid_12m_cohort_summary.csv`
+- `sensitivity_exclude_peak_covid_12m_mortality_day28_logistic_results.csv`
+- `sensitivity_exclude_peak_covid_12m_mortality_cox_results.csv`
+- `sensitivity_exclude_peak_covid_12m_vfd_quasipoisson_results.csv`
+- `sensitivity_exclude_peak_covid_12m_pooling_table.csv`
+- `primary_vs_exclude_peak_covid_12m_pooling_table.csv`
+- `primary_sensitivity_models_pooling_table.csv`
+- `primary_sensitivity_models_run_status.csv`
+- `primary_sensitivity_models_cohort_summaries.csv`
+- `primary_sensitivity_3y_exposure_diagnostics.csv`
+
+The VFD diagnostic files are generated automatically at each site when the
+primary script runs. They provide the model-level dispersion diagnostics,
+Poisson versus quasi-Poisson exposure inference, and fitted-value decile
+calibration summaries needed to justify the quasi-Poisson mean model without
+sharing row-level data.

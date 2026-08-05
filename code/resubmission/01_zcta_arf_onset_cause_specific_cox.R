@@ -776,7 +776,32 @@ cohort <- cohort %>%
   )
 
 message("Linking ZCTA ACS social vulnerability covariates...")
-zcta_acs <- readr::read_csv(zcta_acs_path, show_col_types = FALSE, progress = FALSE) %>%
+zcta_acs_raw <- readr::read_csv(zcta_acs_path, show_col_types = FALSE, progress = FALSE)
+required_zcta_acs_cols <- c(
+  "zip",
+  "analysis_year",
+  "community_year",
+  "total_population",
+  "median_household_income",
+  "pct_poverty",
+  "pct_bachelor_plus",
+  "pct_unemployed",
+  "pct_no_vehicle",
+  "pct_nonwhite"
+)
+missing_zcta_acs_cols <- setdiff(required_zcta_acs_cols, names(zcta_acs_raw))
+if (length(missing_zcta_acs_cols)) {
+  stop(
+    "ZCTA ACS file is missing required columns: ",
+    paste(missing_zcta_acs_cols, collapse = ", "),
+    ". Expected the bundled file at exposome/zcta/zcta_acs_community_covariates_2005_2023.csv.gz ",
+    "or an equivalent file."
+  )
+}
+optional_numeric_col <- function(df, column) {
+  if (column %in% names(df)) as.numeric(df[[column]]) else NA_real_
+}
+zcta_acs <- zcta_acs_raw %>%
   transmute(
     zipcode_five_digit = normalize_zip(zip),
     index_year = as.integer(analysis_year),
@@ -787,12 +812,24 @@ zcta_acs <- readr::read_csv(zcta_acs_path, show_col_types = FALSE, progress = FA
     acs_pct_bachelor_plus = as.numeric(pct_bachelor_plus),
     acs_pct_unemployed = as.numeric(pct_unemployed),
     acs_pct_no_vehicle = as.numeric(pct_no_vehicle),
-    acs_pct_nonwhite = as.numeric(pct_nonwhite)
+    acs_pct_nonwhite = as.numeric(pct_nonwhite),
+    acs_pct_black = optional_numeric_col(zcta_acs_raw, "pct_black"),
+    acs_pct_asian = optional_numeric_col(zcta_acs_raw, "pct_asian"),
+    acs_pct_hispanic = optional_numeric_col(zcta_acs_raw, "pct_hispanic")
   ) %>%
   mutate(
     acs_median_household_income = if_else(acs_median_household_income < 0, NA_real_, acs_median_household_income),
     across(
-      c(acs_pct_poverty, acs_pct_bachelor_plus, acs_pct_unemployed, acs_pct_no_vehicle, acs_pct_nonwhite),
+      c(
+        acs_pct_poverty,
+        acs_pct_bachelor_plus,
+        acs_pct_unemployed,
+        acs_pct_no_vehicle,
+        acs_pct_nonwhite,
+        acs_pct_black,
+        acs_pct_asian,
+        acs_pct_hispanic
+      ),
       ~ if_else(.x < 0 | .x > 1, NA_real_, .x)
     )
   ) %>%
@@ -807,7 +844,10 @@ zcta_acs <- readr::read_csv(zcta_acs_path, show_col_types = FALSE, progress = FA
         acs_pct_bachelor_plus,
         acs_pct_unemployed,
         acs_pct_no_vehicle,
-        acs_pct_nonwhite
+        acs_pct_nonwhite,
+        acs_pct_black,
+        acs_pct_asian,
+        acs_pct_hispanic
       ),
       ~ if_else(is.na(.x), median(.x, na.rm = TRUE), .x)
     ),
@@ -841,6 +881,9 @@ zcta_acs <- readr::read_csv(zcta_acs_path, show_col_types = FALSE, progress = FA
     acs_pct_unemployed,
     acs_pct_no_vehicle,
     acs_pct_nonwhite,
+    acs_pct_black,
+    acs_pct_asian,
+    acs_pct_hispanic,
     acs_zcta_svi_proxy
   )
 

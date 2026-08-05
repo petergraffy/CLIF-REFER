@@ -1,2 +1,0 @@
-site,n_arf,n_patients,mortality_events,median_mortality_followup_days,mean_vfd,median_vfd,vfd_horizon_days,mean_charlson,median_charlson,pm25_exposure_column,no2_exposure_column,adjustment_covariates
-UCMC,15358,14008,4468,9.265972222222222,19.780791466053397,26.77326388888889,28,3.422255502018479,3,pm25_12m_zcta,no2_12m_zcta,age_10 + sex + race_ethnicity + charlson_score + index_year_f + acs_pct_poverty + acs_pct_unemployed + acs_pct_no_vehicle + acs_pct_nonwhite + acs_median_household_income_10k + acs_pct_bachelor_plus

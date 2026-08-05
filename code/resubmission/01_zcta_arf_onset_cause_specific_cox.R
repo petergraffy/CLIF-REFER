@@ -59,6 +59,11 @@ if (!file.exists(config_path)) {
 config <- jsonlite::fromJSON(config_path)
 repo <- normalizePath(config$repo %||% repo_guess, mustWork = TRUE)
 configured_tables_path <- normalizePath(config$tables_path, mustWork = TRUE)
+resolve_repo_path <- function(path, default) {
+  path <- path %||% default
+  if (is.na(path) || !nzchar(path)) return(default)
+  if (grepl("^(/|[A-Za-z]:[/\\\\]|~)", path)) path else file.path(repo, path)
+}
 site_name <- config$site_name %||% "site"
 time_zone <- config$time_zone %||% "UTC"
 study_start <- as.Date(config$study_start %||% "2018-01-01")
@@ -587,25 +592,18 @@ cohort <- cohort %>%
   )
 
 message("Linking ZCTA pollution exposures...")
-default_zcta_dir <- file.path(dirname(repo), "CLIF-pollution-microbiome", "data", "exposome_zcta")
-default_monthly_no2_dir <- file.path(repo, "data", "resubmission", "no2_zcta_monthly")
-default_zcta_acs_path <- file.path(
-  dirname(repo),
-  "environment_transplant_survival",
-  "data",
-  "processed",
-  "community",
-  "zcta_acs_community_covariates_2005_2023.csv.gz"
-)
+default_zcta_dir <- file.path(repo, "exposome", "zcta")
+default_monthly_no2_dir <- file.path(default_zcta_dir, "no2_monthly")
+default_zcta_acs_path <- file.path(default_zcta_dir, "zcta_acs_community_covariates_2005_2023.csv.gz")
 pm25_path <- normalizePath(
-  config$zcta_pm25_monthly_path %||% file.path(default_zcta_dir, "air_pollution_zcta_pm25_monthly_2005_2023.parquet"),
+  resolve_repo_path(config$zcta_pm25_monthly_path, file.path(default_zcta_dir, "air_pollution_zcta_pm25_monthly_2005_2023.parquet")),
   mustWork = TRUE
 )
 o3_path <- normalizePath(
-  config$zcta_o3_monthly_path %||% file.path(default_zcta_dir, "air_pollution_zcta_o3_monthly_2005_2023.parquet"),
+  resolve_repo_path(config$zcta_o3_monthly_path, file.path(default_zcta_dir, "air_pollution_zcta_o3_monthly_2005_2023.parquet")),
   mustWork = TRUE
 )
-no2_monthly_dir <- config$zcta_no2_monthly_dir %||% default_monthly_no2_dir
+no2_monthly_dir <- resolve_repo_path(config$zcta_no2_monthly_dir, default_monthly_no2_dir)
 no2_monthly_files <- character()
 if (dir.exists(no2_monthly_dir)) {
   no2_monthly_files <- list.files(
@@ -614,8 +612,8 @@ if (dir.exists(no2_monthly_dir)) {
     full.names = TRUE
   )
 }
-no2_path <- config$zcta_no2_annual_path %||% file.path(default_zcta_dir, "air_pollution_zcta_no2_annual_2005_2025.parquet")
-zcta_acs_path <- normalizePath(config$zcta_acs_community_covariates_path %||% default_zcta_acs_path, mustWork = TRUE)
+no2_path <- resolve_repo_path(config$zcta_no2_annual_path, file.path(default_zcta_dir, "air_pollution_zcta_no2_annual_2005_2025.parquet"))
+zcta_acs_path <- normalizePath(resolve_repo_path(config$zcta_acs_community_covariates_path, default_zcta_acs_path), mustWork = TRUE)
 
 pm25_monthly <- arrow::read_parquet(pm25_path) %>%
   transmute(

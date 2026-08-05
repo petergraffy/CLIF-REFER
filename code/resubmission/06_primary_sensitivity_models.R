@@ -320,15 +320,15 @@ derive_36m_exposures <- function(df) {
 
   pm25_path <- Sys.getenv(
     "REFER_ZCTA_PM25_MONTHLY_PATH",
-    file.path(dirname(repo), "CLIF-pollution-microbiome", "data", "exposome_zcta", "air_pollution_zcta_pm25_monthly_2005_2023.parquet")
+    file.path(repo, "exposome", "zcta", "air_pollution_zcta_pm25_monthly_2005_2023.parquet")
   )
   no2_monthly_dir <- Sys.getenv(
     "REFER_ZCTA_NO2_MONTHLY_DIR",
-    file.path(repo, "data", "resubmission", "no2_zcta_monthly")
+    file.path(repo, "exposome", "zcta", "no2_monthly")
   )
   no2_annual_path <- Sys.getenv(
     "REFER_ZCTA_NO2_ANNUAL_PATH",
-    file.path(dirname(repo), "CLIF-pollution-microbiome", "data", "exposome_zcta", "air_pollution_zcta_no2_annual_2005_2025.parquet")
+    file.path(repo, "exposome", "zcta", "air_pollution_zcta_no2_annual_2005_2025.parquet")
   )
 
   if (!file.exists(pm25_path) || !file.exists(no2_annual_path)) {

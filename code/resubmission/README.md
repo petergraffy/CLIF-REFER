@@ -31,6 +31,21 @@ Rscript code/resubmission/00_run_full_resubmission_pipeline.R \
   output/resubmission/<run>/resubmission_analysis_dataset_no_icu_los_restriction.csv
 ```
 
+## Required Exposome Files
+
+The resubmission cohort builder uses repo-local ZCTA exposure files by default.
+Sites should receive these files in `exposome/zcta/`:
+
+- `air_pollution_zcta_pm25_monthly_2005_2023.parquet`
+- `air_pollution_zcta_o3_monthly_2005_2023.parquet`
+- `air_pollution_zcta_no2_annual_2005_2025.parquet`
+- `zcta_acs_community_covariates_2005_2023.csv.gz`
+- `no2_monthly/no2_zcta_monthly_2019.parquet` through `no2_monthly/no2_zcta_monthly_2025.parquet`
+
+If a site needs to override these paths, copy
+`resubmission_config_template.json` to `resubmission_config.json` and edit the
+corresponding `zcta_*` fields.
+
 `01_primary_reviewer_optimized_models.R`
 
 This script assumes the original cohort/linkage workflow has already constructed `arf_exp`. If available, it also uses:

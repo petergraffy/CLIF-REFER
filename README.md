@@ -125,11 +125,13 @@ Follow instructions in the [config/README.md](config/README.md) file for detaile
 
 ## 2. Set up the project environment
 
-Initialize the R environment. Run `00_renv_restore.R` in the [code](code/templates/R) to set up the project environment.
+Initialize the R environment using the project `renv.lock` file.
 
-Unzip the `acs_estimates.csv.zip` file in the exposome folder and save it there.
+The resubmission analysis uses bundled ZCTA-level air pollution and ACS files
+in `exposome/zcta/`. The older county-level ACS archive
+`exposome/acs_estimates.csv.zip` is retained for archived analyses.
 
 ## 3. Run code
 
-Detailed instructions on the code workflow are provided in the [code directory](code/README.md)
-
+Detailed instructions for the reviewer-focused workflow are provided in
+[`code/resubmission/README.md`](code/resubmission/README.md).

@@ -202,27 +202,243 @@ quartile_colors <- c(
   "Q4" = "#B2182B"
 )
 
-p_aj <- ggplot(aj_df, aes(time, cif, color = exposure_quartile)) +
-  geom_step(linewidth = 0.9) +
-  facet_grid(outcome ~ pollutant, scales = "free_y") +
-  scale_color_manual(values = quartile_colors, drop = FALSE) +
-  scale_x_continuous(limits = c(0, 28), breaks = c(0, 7, 14, 21, 28), expand = expansion(mult = c(0, 0.02))) +
-  scale_y_continuous(labels = percent_format(accuracy = 1), expand = expansion(mult = c(0, 0.06))) +
-  labs(
-    x = "Days since ARF onset",
-    y = "Cumulative incidence",
-    color = "Exposure quartile"
-  ) +
-  theme_classic(base_size = 13) +
-  theme(
-    plot.title = element_text(face = "bold"),
-    strip.background = element_rect(fill = "grey92", color = "grey70"),
-    strip.text = element_text(face = "bold"),
-    legend.position = "bottom"
+quartile_labels <- c("Q1 lowest", "Q2", "Q3", "Q4 highest")
+quartile_colors_labeled <- c(
+  "Q1 lowest" = "#2166AC",
+  "Q2" = "#67A9CF",
+  "Q3" = "#F4A582",
+  "Q4 highest" = "#B2182B"
+)
+tick_times <- c(0, 7, 14, 21, 28)
+x_limits <- c(-2.5, 29.4)
+
+theme_cif_transplant <- function() {
+  theme_minimal(base_size = 18) +
+    theme(
+      text = element_text(color = "grey10"),
+      panel.grid = element_blank(),
+      panel.border = element_rect(fill = NA, color = "grey45", linewidth = 0.55),
+      axis.line = element_line(color = "black", linewidth = 0.4),
+      axis.ticks = element_line(color = "black", linewidth = 0.35),
+      legend.position = "bottom",
+      legend.title = element_blank(),
+      legend.text = element_text(size = 18),
+      legend.key.width = unit(30, "pt"),
+      axis.title = element_text(size = 18),
+      axis.text = element_text(size = 16, color = "grey20"),
+      strip.text = element_text(face = "bold", size = 18, color = "grey10"),
+      panel.spacing.x = unit(28, "pt"),
+      panel.spacing.y = unit(22, "pt"),
+      plot.margin = margin(8, 32, 8, 8)
+    )
+}
+
+theme_table_box <- function() {
+  theme_minimal(base_size = 16) +
+    theme(
+      text = element_text(color = "grey10"),
+      panel.grid = element_blank(),
+      panel.border = element_rect(fill = NA, color = "grey45", linewidth = 0.55),
+      axis.title = element_text(size = 17, color = "grey10", margin = margin(t = 7)),
+      axis.text.x = element_text(size = 16, color = "grey20", margin = margin(t = 2)),
+      axis.text.y = element_text(size = 17, face = "bold"),
+      axis.ticks.x = element_line(color = "black", linewidth = 0.25),
+      axis.ticks.y = element_blank(),
+      plot.title = element_text(size = 17, face = "bold", color = "grey20", margin = margin(b = 3)),
+      plot.margin = margin(3, 8, 4, 8)
+    )
+}
+
+event_code_lookup <- tibble(
+  outcome = factor(c("Extubation", "Death", "Persistent RF"), levels = c("Extubation", "Death", "Persistent RF")),
+  event_code = c(1L, 2L, 3L)
+)
+
+aj_plot_data <- aj_df %>%
+  mutate(
+    pollutant = factor(pollutant, levels = c("NO2", "PM2.5")),
+    outcome = recode(
+      as.character(outcome),
+      "Successful extubation" = "Extubation",
+      "Persistent respiratory failure" = "Persistent RF"
+    ),
+    outcome = factor(outcome, levels = c("Extubation", "Death", "Persistent RF")),
+    exposure_quartile = recode(
+      as.character(exposure_quartile),
+      "Q1" = "Q1 lowest",
+      "Q2" = "Q2",
+      "Q3" = "Q3",
+      "Q4" = "Q4 highest"
+    ),
+    exposure_quartile = factor(exposure_quartile, levels = quartile_labels)
+  ) %>%
+  filter(!is.na(pollutant), !is.na(outcome), !is.na(exposure_quartile), time <= 28)
+
+analysis_for_risk <- analysis_df %>%
+  mutate(
+    no2_q = if ("no2_q" %in% names(.)) no2_q else make_quartile(no2_12m_zcta),
+    pm25_q = if ("pm25_q" %in% names(.)) pm25_q else make_quartile(pm25_12m_zcta)
   )
 
-ggsave(file.path(fig_dir, "unadjusted_aalen_johansen_cif_by_exposure_quartile.png"), p_aj, width = 11, height = 10, dpi = 300)
-ggsave(file.path(fig_dir, "unadjusted_aalen_johansen_cif_by_exposure_quartile.pdf"), p_aj, width = 11, height = 10)
+make_risk_event_table <- function(data, exposure_var, pollutant_label) {
+  base <- data %>%
+    filter(!is.na(.data[[exposure_var]])) %>%
+    mutate(
+      exposure_quartile = recode(
+        as.character(.data[[exposure_var]]),
+        "Q1" = "Q1 lowest",
+        "Q2" = "Q2",
+        "Q3" = "Q3",
+        "Q4" = "Q4 highest"
+      ),
+      exposure_quartile = factor(exposure_quartile, levels = quartile_labels)
+    ) %>%
+    filter(!is.na(exposure_quartile))
+
+  tidyr::expand_grid(
+    pollutant = pollutant_label,
+    outcome = event_code_lookup$outcome,
+    exposure_quartile = factor(quartile_labels, levels = quartile_labels),
+    time = tick_times
+  ) %>%
+    left_join(event_code_lookup, by = "outcome") %>%
+    rowwise() %>%
+    mutate(
+      n_risk = sum(base$exposure_quartile == exposure_quartile & base$ftime_days >= time, na.rm = TRUE),
+      n_events = sum(base$exposure_quartile == exposure_quartile & base$event_code == event_code & base$ftime_days <= time, na.rm = TRUE),
+      label = paste0(n_events, "/", n_risk)
+    ) %>%
+    ungroup()
+}
+
+risk_event_table <- bind_rows(
+  make_risk_event_table(analysis_for_risk, "no2_q", "NO2"),
+  make_risk_event_table(analysis_for_risk, "pm25_q", "PM2.5")
+) %>%
+  mutate(
+    pollutant = factor(pollutant, levels = c("NO2", "PM2.5")),
+    outcome = factor(outcome, levels = c("Extubation", "Death", "Persistent RF"))
+  )
+
+panel_scales <- aj_plot_data %>%
+  group_by(pollutant, outcome) %>%
+  summarise(y_max = max(cif, na.rm = TRUE), .groups = "drop") %>%
+  mutate(y_limit = y_max * 1.04)
+
+make_curve_panel <- function(pollutant_value, outcome_value, show_y_axis = TRUE) {
+  dat <- aj_plot_data %>% filter(pollutant == pollutant_value, outcome == outcome_value)
+  y_limit <- panel_scales %>%
+    filter(pollutant == pollutant_value, outcome == outcome_value) %>%
+    pull(y_limit)
+
+  ggplot(dat, aes(x = time, y = cif, color = exposure_quartile)) +
+    geom_step(linewidth = 1.05) +
+    scale_color_manual(values = quartile_colors_labeled, drop = FALSE) +
+    scale_x_continuous(
+      breaks = tick_times,
+      labels = label_number(accuracy = 1, trim = TRUE),
+      limits = x_limits,
+      expand = expansion(mult = c(0.01, 0.01))
+    ) +
+    scale_y_continuous(
+      labels = label_percent(accuracy = 1),
+      limits = c(0, y_limit),
+      expand = expansion(mult = c(0.015, 0.035))
+    ) +
+    labs(x = NULL, y = if (show_y_axis) "Cumulative incidence" else NULL, color = "Quartile") +
+    theme_cif_transplant() +
+    theme(
+      axis.title.y = if (show_y_axis) element_text(size = 19) else element_blank(),
+      axis.text.y = if (show_y_axis) element_text(size = 17, color = "grey20") else element_blank(),
+      axis.ticks.y = if (show_y_axis) element_line(color = "black", linewidth = 0.35) else element_blank(),
+      legend.position = "bottom",
+      plot.margin = margin(4, 8, 1, 8)
+    )
+}
+
+make_table_panel <- function(pollutant_value, outcome_value, show_x_axis = FALSE) {
+  dat <- risk_event_table %>%
+    filter(pollutant == pollutant_value, outcome == outcome_value) %>%
+    mutate(exposure_quartile = factor(exposure_quartile, levels = rev(quartile_labels)))
+
+  ggplot(dat, aes(x = time, y = exposure_quartile, label = label, color = exposure_quartile)) +
+    geom_text(size = 5.2, fontface = "bold") +
+    scale_color_manual(values = quartile_colors_labeled, drop = FALSE, guide = "none") +
+    scale_x_continuous(
+      breaks = tick_times,
+      labels = label_number(accuracy = 1, trim = TRUE),
+      limits = x_limits,
+      expand = expansion(mult = c(0.01, 0.01))
+    ) +
+    scale_y_discrete(labels = function(x) str_replace(x, " lowest| highest", "")) +
+    coord_cartesian(clip = "off") +
+    labs(title = "Events / at risk", x = if (show_x_axis) "Days since ARF onset" else NULL, y = NULL) +
+    theme_table_box() +
+    theme(
+      axis.text.x = if (show_x_axis) element_text(size = 16, color = "grey20", margin = margin(t = 2)) else element_blank(),
+      axis.ticks.x = if (show_x_axis) element_line(color = "black", linewidth = 0.25) else element_blank(),
+      legend.position = "none",
+      plot.margin = margin(1, 30, if (show_x_axis) 6 else 2, 8)
+    )
+}
+
+make_cell <- function(pollutant_value, outcome_value, show_y_axis = TRUE, show_x_axis = FALSE) {
+  make_curve_panel(pollutant_value, outcome_value, show_y_axis = show_y_axis) /
+    make_table_panel(pollutant_value, outcome_value, show_x_axis = show_x_axis) +
+    plot_layout(heights = c(4.2, 1.28))
+}
+
+make_column_header <- function(label_expr) {
+  ggplot() +
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf, fill = NA, color = "grey45", linewidth = 0.55) +
+    annotate("text", x = 0.5, y = 0.42, label = label_expr, parse = TRUE, hjust = 0.5, vjust = 0.5, fontface = "bold", size = 6.4) +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "off") +
+    theme_void() +
+    theme(plot.margin = margin(12, 8, -18, 8))
+}
+
+make_row_header <- function(label_text) {
+  ggplot() +
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf, fill = NA, color = "grey45", linewidth = 0.55) +
+    annotate("text", x = 0.5, y = 0.5, label = label_text, angle = -90, hjust = 0.5, vjust = 0.5, fontface = "bold", size = 6.8) +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "off") +
+    theme_void() +
+    theme(plot.margin = margin(4, 8, 2, -2))
+}
+
+header_row <- wrap_plots(
+  make_column_header("'Nitrogen dioxide'~(NO[2])"),
+  make_column_header("'Fine particulate matter'~(PM[2.5])"),
+  plot_spacer(),
+  nrow = 1,
+  widths = c(1, 1, 0.075)
+)
+
+outcome_levels <- c("Extubation", "Death", "Persistent RF")
+pollutant_levels <- c("NO2", "PM2.5")
+row_plots <- lapply(seq_along(outcome_levels), function(i) {
+  outcome_value <- outcome_levels[[i]]
+  wrap_plots(
+    make_cell(pollutant_levels[[1]], outcome_value, show_y_axis = TRUE, show_x_axis = i == length(outcome_levels)),
+    make_cell(pollutant_levels[[2]], outcome_value, show_y_axis = FALSE, show_x_axis = i == length(outcome_levels)),
+    make_row_header(outcome_value),
+    nrow = 1,
+    widths = c(1, 1, 0.075)
+  )
+})
+
+p_aj <- (header_row / wrap_plots(row_plots, ncol = 1)) +
+  plot_layout(heights = c(0.075, 3), guides = "collect") +
+  plot_annotation(
+    theme = theme(
+      legend.position = "bottom",
+      legend.text = element_text(size = 19),
+      plot.margin = margin(8, 14, 8, 14)
+    )
+  )
+
+ggsave(file.path(fig_dir, "unadjusted_aalen_johansen_cif_by_exposure_quartile.png"), p_aj, width = 21, height = 19, dpi = 300)
+ggsave(file.path(fig_dir, "unadjusted_aalen_johansen_cif_by_exposure_quartile.pdf"), p_aj, width = 21, height = 19)
 
 primary_social_covars <- c(
   "acs_pct_poverty",

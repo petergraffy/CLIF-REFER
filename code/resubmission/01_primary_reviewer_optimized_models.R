@@ -528,6 +528,107 @@ tidy_vfd <- function(fit, model_df, exposure_terms, model_label, covars) {
     )
 }
 
+continuous_outcome_specs <- list(
+  vfd = list(
+    outcome_col = "ventilator_free_days",
+    label = function() glue("Ventilator-free days through day {vfd_days}"),
+    mean_col = "mean_vfd",
+    prefix = "vfd",
+    ceiling = function() vfd_days
+  ),
+  imv_duration = list(
+    outcome_col = "imv_days_through_vfd",
+    label = function() glue("IMV duration through day {vfd_days}"),
+    mean_col = "mean_imv_days",
+    prefix = "imv_days",
+    ceiling = function() vfd_days
+  )
+)
+
+tidy_continuous_quasipoisson <- function(fit, model_df, exposure_terms, model_label, covars, spec) {
+  y <- model_df[[spec$outcome_col]]
+  out <- broom::tidy(fit) %>%
+    filter(term %in% exposure_terms) %>%
+    transmute(
+      site = site_name,
+      outcome = spec$label(),
+      model = model_label,
+      term,
+      n = nrow(model_df),
+      ratio_of_means = exp(estimate),
+      conf_low = exp(estimate - 1.96 * std.error),
+      conf_high = exp(estimate + 1.96 * std.error),
+      p_value = p.value,
+      dispersion = summary(fit)$dispersion,
+      adjustment_set = paste(setdiff(covars, exposure_terms), collapse = " + ")
+    )
+  out[[spec$mean_col]] <- mean(y, na.rm = TRUE)
+  out
+}
+
+diagnose_continuous_quasipoisson_model <- function(obj, spec) {
+  fit <- obj$fit
+  model_df <- obj$model_df
+  y <- model_df[[spec$outcome_col]]
+  fitted_values <- stats::fitted(fit)
+  pearson_resid <- stats::residuals(fit, type = "pearson")
+  deviance_resid <- stats::residuals(fit, type = "deviance")
+  residual_df <- stats::df.residual(fit)
+  pearson_chisq <- sum(pearson_resid^2, na.rm = TRUE)
+  cooks <- tryCatch(stats::cooks.distance(fit), error = function(e) rep(NA_real_, nrow(model_df)))
+  poisson_fit <- tryCatch(
+    stats::glm(stats::formula(fit), data = model_df, family = poisson(link = "log")),
+    warning = function(w) {
+      suppressWarnings(stats::glm(stats::formula(fit), data = model_df, family = poisson(link = "log")))
+    },
+    error = function(e) NULL
+  )
+
+  tibble(
+    site = site_name,
+    outcome = spec$label(),
+    model = obj$model_label,
+    n = nrow(model_df),
+    outcome_mean = mean(y, na.rm = TRUE),
+    outcome_variance = stats::var(y, na.rm = TRUE),
+    variance_to_mean_ratio = outcome_variance / outcome_mean,
+    outcome_min = min(y, na.rm = TRUE),
+    outcome_q25 = as.numeric(stats::quantile(y, 0.25, na.rm = TRUE)),
+    outcome_median = stats::median(y, na.rm = TRUE),
+    outcome_q75 = as.numeric(stats::quantile(y, 0.75, na.rm = TRUE)),
+    outcome_max = max(y, na.rm = TRUE),
+    zero_outcome_n = sum(y == 0, na.rm = TRUE),
+    zero_outcome_percent = 100 * zero_outcome_n / n,
+    ceiling_outcome_n = sum(y >= spec$ceiling(), na.rm = TRUE),
+    ceiling_outcome_percent = 100 * ceiling_outcome_n / n,
+    noninteger_outcome_n = sum(abs(y - round(y)) > 1e-8, na.rm = TRUE),
+    noninteger_outcome_percent = 100 * noninteger_outcome_n / n,
+    residual_df = residual_df,
+    pearson_chisq = pearson_chisq,
+    pearson_dispersion = pearson_chisq / residual_df,
+    deviance_dispersion = stats::deviance(fit) / residual_df,
+    quasipoisson_dispersion = summary(fit)$dispersion,
+    poisson_overdispersion_p = stats::pchisq(pearson_chisq, df = residual_df, lower.tail = FALSE),
+    se_inflation_vs_poisson = sqrt(summary(fit)$dispersion),
+    poisson_aic = if (!is.null(poisson_fit)) stats::AIC(poisson_fit) else NA_real_,
+    fitted_min = min(fitted_values, na.rm = TRUE),
+    fitted_q25 = as.numeric(stats::quantile(fitted_values, 0.25, na.rm = TRUE)),
+    fitted_median = stats::median(fitted_values, na.rm = TRUE),
+    fitted_q75 = as.numeric(stats::quantile(fitted_values, 0.75, na.rm = TRUE)),
+    fitted_max = max(fitted_values, na.rm = TRUE),
+    pearson_resid_q05 = as.numeric(stats::quantile(pearson_resid, 0.05, na.rm = TRUE)),
+    pearson_resid_median = stats::median(pearson_resid, na.rm = TRUE),
+    pearson_resid_q95 = as.numeric(stats::quantile(pearson_resid, 0.95, na.rm = TRUE)),
+    deviance_resid_q05 = as.numeric(stats::quantile(deviance_resid, 0.05, na.rm = TRUE)),
+    deviance_resid_median = stats::median(deviance_resid, na.rm = TRUE),
+    deviance_resid_q95 = as.numeric(stats::quantile(deviance_resid, 0.95, na.rm = TRUE)),
+    max_cooks_distance = max(cooks, na.rm = TRUE),
+    influential_cooks_n = sum(cooks > (4 / nrow(model_df)), na.rm = TRUE),
+    influential_cooks_percent = 100 * influential_cooks_n / nrow(model_df),
+    adjustment_set = paste(setdiff(obj$covars, obj$exposure_terms), collapse = " + ")
+  )
+}
+
 diagnose_vfd_model <- function(obj) {
   fit <- obj$fit
   model_df <- obj$model_df
@@ -636,6 +737,54 @@ compare_vfd_poisson_quasi <- function(obj) {
       quasi_to_poisson_se_ratio = quasi_std_error / poisson_std_error,
       adjustment_set = paste(setdiff(obj$covars, obj$exposure_terms), collapse = " + "),
       .before = 1
+  )
+}
+
+compare_continuous_poisson_quasi <- function(obj, spec) {
+  poisson_fit <- tryCatch(
+    stats::glm(stats::formula(obj$fit), data = obj$model_df, family = poisson(link = "log")),
+    warning = function(w) {
+      suppressWarnings(stats::glm(stats::formula(obj$fit), data = obj$model_df, family = poisson(link = "log")))
+    },
+    error = function(e) NULL
+  )
+  if (is.null(poisson_fit)) return(tibble())
+
+  quasi_terms <- broom::tidy(obj$fit) %>%
+    filter(term %in% obj$exposure_terms) %>%
+    transmute(
+      term,
+      quasi_beta = estimate,
+      quasi_std_error = std.error,
+      quasi_p_value = p.value,
+      quasi_ratio_of_means = exp(estimate),
+      quasi_conf_low = exp(estimate - 1.96 * std.error),
+      quasi_conf_high = exp(estimate + 1.96 * std.error)
+    )
+
+  poisson_terms <- broom::tidy(poisson_fit) %>%
+    filter(term %in% obj$exposure_terms) %>%
+    transmute(
+      term,
+      poisson_beta = estimate,
+      poisson_std_error = std.error,
+      poisson_p_value = p.value,
+      poisson_ratio_of_means = exp(estimate),
+      poisson_conf_low = exp(estimate - 1.96 * std.error),
+      poisson_conf_high = exp(estimate + 1.96 * std.error)
+    )
+
+  quasi_terms %>%
+    left_join(poisson_terms, by = "term") %>%
+    mutate(
+      site = site_name,
+      outcome = spec$label(),
+      model = obj$model_label,
+      n = nrow(obj$model_df),
+      quasipoisson_dispersion = summary(obj$fit)$dispersion,
+      quasi_to_poisson_se_ratio = quasi_std_error / poisson_std_error,
+      adjustment_set = paste(setdiff(obj$covars, obj$exposure_terms), collapse = " + "),
+      .before = 1
     )
 }
 
@@ -659,6 +808,32 @@ calibrate_vfd_model <- function(obj, n_bins = 10) {
     mutate(
       site = site_name,
       outcome = glue("Ventilator-free days through day {vfd_days}"),
+      model = obj$model_label,
+      .before = 1
+  )
+}
+
+calibrate_continuous_model <- function(obj, spec, n_bins = 10) {
+  outcome_col <- spec$outcome_col
+  obj$model_df %>%
+    mutate(
+      fitted_outcome = stats::fitted(obj$fit),
+      fitted_decile = dplyr::ntile(fitted_outcome, n_bins)
+    ) %>%
+    group_by(fitted_decile) %>%
+    summarise(
+      n = n(),
+      fitted_mean = mean(fitted_outcome, na.rm = TRUE),
+      observed_mean = mean(.data[[outcome_col]], na.rm = TRUE),
+      observed_sd = stats::sd(.data[[outcome_col]], na.rm = TRUE),
+      observed_median = stats::median(.data[[outcome_col]], na.rm = TRUE),
+      observed_zero_percent = 100 * mean(.data[[outcome_col]] == 0, na.rm = TRUE),
+      observed_ceiling_percent = 100 * mean(.data[[outcome_col]] >= spec$ceiling(), na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      site = site_name,
+      outcome = spec$label(),
       model = obj$model_label,
       .before = 1
     )
@@ -708,6 +883,7 @@ prepare_table1_frame <- function(df) {
         as.numeric(difftime(discharge_time, t0, units = "days"))
       },
       vent_hours = if ("vent_hours" %in% names(.)) vent_hours else imv_days_through_vfd * 24,
+      imv_days_through_vfd = as.numeric(imv_days_through_vfd),
       in_hosp_death = if ("in_hosp_death" %in% names(.)) in_hosp_death else mortality_event,
       death_28d = if ("death_28d" %in% names(.)) {
         death_28d
@@ -822,6 +998,24 @@ fit_vfd_model <- function(df, exposure_terms, model_label, adjustment_covars) {
   list(fit = fit, model_df = model_df, exposure_terms = exposure_terms, model_label = model_label, covars = covars)
 }
 
+fit_continuous_quasipoisson_model <- function(df, exposure_terms, model_label, adjustment_covars, outcome_col) {
+  covars <- c(exposure_terms, adjustment_covars)
+  model_df <- df %>%
+    dplyr::select(all_of(outcome_col), all_of(covars)) %>%
+    drop_na()
+  covars <- drop_uninformative_covars(model_df, covars, exposure_terms)
+  model_df <- model_df %>%
+    dplyr::select(all_of(outcome_col), all_of(covars))
+
+  fit <- stats::glm(
+    as.formula(paste0(outcome_col, " ~ ", paste(covars, collapse = " + "))),
+    data = model_df,
+    family = quasipoisson(link = "log")
+  )
+
+  list(fit = fit, model_df = model_df, exposure_terms = exposure_terms, model_label = model_label, covars = covars)
+}
+
 fit_primary_model_set <- function(df) {
   logistic_fits <- purrr::map(
     model_specs,
@@ -838,13 +1032,29 @@ fit_primary_model_set <- function(df) {
     ~ fit_vfd_model(df, .x$exposure_terms, .x$model_label, adjustment_covars)
   )
 
+  imv_duration_fits <- purrr::map(
+    model_specs,
+    ~ fit_continuous_quasipoisson_model(
+      df,
+      .x$exposure_terms,
+      .x$model_label,
+      adjustment_covars,
+      continuous_outcome_specs$imv_duration$outcome_col
+    )
+  )
+
   list(
     logistic_fits = logistic_fits,
     cox_fits = cox_fits,
     vfd_fits = vfd_fits,
+    imv_duration_fits = imv_duration_fits,
     logistic_results = purrr::map_dfr(logistic_fits, ~ tidy_logistic(.x$fit, .x$model_df, .x$exposure_terms, .x$model_label, .x$covars)),
     cox_results = purrr::map_dfr(cox_fits, ~ tidy_cox(.x$fit, .x$model_df, .x$exposure_terms, .x$model_label, .x$covars)),
-    vfd_results = purrr::map_dfr(vfd_fits, ~ tidy_vfd(.x$fit, .x$model_df, .x$exposure_terms, .x$model_label, .x$covars))
+    vfd_results = purrr::map_dfr(vfd_fits, ~ tidy_vfd(.x$fit, .x$model_df, .x$exposure_terms, .x$model_label, .x$covars)),
+    imv_duration_results = purrr::map_dfr(
+      imv_duration_fits,
+      ~ tidy_continuous_quasipoisson(.x$fit, .x$model_df, .x$exposure_terms, .x$model_label, .x$covars, continuous_outcome_specs$imv_duration)
+    )
   )
 }
 
@@ -861,6 +1071,8 @@ summarise_modeling_cohort <- function(df, sensitivity_label, primary_n = NA_inte
     median_mortality_followup_days = median(df$mortality_ftime_days, na.rm = TRUE),
     mean_vfd = mean(df$ventilator_free_days, na.rm = TRUE),
     median_vfd = median(df$ventilator_free_days, na.rm = TRUE),
+    mean_imv_days = mean(df$imv_days_through_vfd, na.rm = TRUE),
+    median_imv_days = median(df$imv_days_through_vfd, na.rm = TRUE),
     vfd_horizon_days = vfd_days,
     mean_charlson = mean(df$charlson_score, na.rm = TRUE),
     median_charlson = median(df$charlson_score, na.rm = TRUE),
@@ -870,7 +1082,7 @@ summarise_modeling_cohort <- function(df, sensitivity_label, primary_n = NA_inte
   )
 }
 
-make_primary_pooling_table <- function(logistic_tbl, cox_tbl, vfd_tbl, sensitivity_label,
+make_primary_pooling_table <- function(logistic_tbl, cox_tbl, vfd_tbl, imv_duration_tbl, sensitivity_label,
                                        covid_exclude_start = as.Date(NA),
                                        covid_exclude_end = as.Date(NA)) {
   bind_rows(
@@ -888,6 +1100,7 @@ make_primary_pooling_table <- function(logistic_tbl, cox_tbl, vfd_tbl, sensitivi
         n,
         events,
         mean_vfd = NA_real_,
+        mean_imv_days = NA_real_,
         estimate = odds_ratio,
         conf_low,
         conf_high,
@@ -909,6 +1122,7 @@ make_primary_pooling_table <- function(logistic_tbl, cox_tbl, vfd_tbl, sensitivi
         n,
         events,
         mean_vfd = NA_real_,
+        mean_imv_days = NA_real_,
         estimate = hazard_ratio,
         conf_low,
         conf_high,
@@ -930,6 +1144,29 @@ make_primary_pooling_table <- function(logistic_tbl, cox_tbl, vfd_tbl, sensitivi
         n,
         events = NA_integer_,
         mean_vfd,
+        mean_imv_days = NA_real_,
+        estimate = ratio_of_means,
+        conf_low,
+        conf_high,
+        p_value,
+        dispersion,
+        adjustment_set
+      ),
+    imv_duration_tbl %>%
+      transmute(
+        site,
+        sensitivity = sensitivity_label,
+        covid_exclude_start,
+        covid_exclude_end,
+        outcome,
+        analysis_model = "Quasi-Poisson regression",
+        pollutant_model = model,
+        term,
+        effect_measure = "ratio_of_means",
+        n,
+        events = NA_integer_,
+        mean_vfd = NA_real_,
+        mean_imv_days,
         estimate = ratio_of_means,
         conf_low,
         conf_high,
@@ -966,12 +1203,26 @@ primary_model_set <- fit_primary_model_set(analysis_df)
 logistic_fits <- primary_model_set$logistic_fits
 cox_fits <- primary_model_set$cox_fits
 vfd_fits <- primary_model_set$vfd_fits
+imv_duration_fits <- primary_model_set$imv_duration_fits
 logistic_results <- primary_model_set$logistic_results
 cox_results <- primary_model_set$cox_results
 vfd_results <- primary_model_set$vfd_results
+imv_duration_results <- primary_model_set$imv_duration_results
 vfd_model_diagnostics <- purrr::map_dfr(vfd_fits, diagnose_vfd_model)
 vfd_poisson_quasi_comparison <- purrr::map_dfr(vfd_fits, compare_vfd_poisson_quasi)
 vfd_calibration_by_decile <- purrr::map_dfr(vfd_fits, calibrate_vfd_model)
+imv_duration_model_diagnostics <- purrr::map_dfr(
+  imv_duration_fits,
+  ~ diagnose_continuous_quasipoisson_model(.x, continuous_outcome_specs$imv_duration)
+)
+imv_duration_poisson_quasi_comparison <- purrr::map_dfr(
+  imv_duration_fits,
+  ~ compare_continuous_poisson_quasi(.x, continuous_outcome_specs$imv_duration)
+)
+imv_duration_calibration_by_decile <- purrr::map_dfr(
+  imv_duration_fits,
+  ~ calibrate_continuous_model(.x, continuous_outcome_specs$imv_duration)
+)
 
 covid_exclude_start <- as.Date(Sys.getenv("REFER_COVID_EXCLUDE_START", "2020-03-01"))
 covid_exclude_end <- as.Date(Sys.getenv("REFER_COVID_EXCLUDE_END", "2021-02-28"))
@@ -987,6 +1238,7 @@ no_peak_covid_model_set <- fit_primary_model_set(analysis_df_no_peak_covid)
 no_peak_covid_logistic_results <- no_peak_covid_model_set$logistic_results
 no_peak_covid_cox_results <- no_peak_covid_model_set$cox_results
 no_peak_covid_vfd_results <- no_peak_covid_model_set$vfd_results
+no_peak_covid_imv_duration_results <- no_peak_covid_model_set$imv_duration_results
 
 no_peak_covid_cohort_summary <- summarise_modeling_cohort(
   analysis_df_no_peak_covid,
@@ -1004,6 +1256,7 @@ primary_pooling_table <- make_primary_pooling_table(
   logistic_results,
   cox_results,
   vfd_results,
+  imv_duration_results,
   sensitivity_label = "primary"
 )
 
@@ -1011,6 +1264,7 @@ no_peak_covid_pooling_table <- make_primary_pooling_table(
   no_peak_covid_logistic_results,
   no_peak_covid_cox_results,
   no_peak_covid_vfd_results,
+  no_peak_covid_imv_duration_results,
   sensitivity_label = "exclude_peak_covid_12m",
   covid_exclude_start = covid_exclude_start,
   covid_exclude_end = covid_exclude_end
@@ -1092,6 +1346,7 @@ table1_continuous_vars <- c(
   "hosp_los_days",
   "vital_coverage_days",
   "vent_hours",
+  "imv_days_through_vfd",
   "ventilator_free_days",
   "sofa_total",
   "prior_icu_stays"
@@ -1115,6 +1370,7 @@ table1_continuous_labels <- c(
   hosp_los_days = "Hospital length of stay (days)",
   vital_coverage_days = "Vital-sign coverage span (days)",
   vent_hours = "Invasive ventilation (hours)",
+  imv_days_through_vfd = "IMV duration through day 28 (days)",
   ventilator_free_days = "Ventilator-free days through day 28",
   sofa_total = "SOFA total score",
   prior_icu_stays = "Prior ICU stays (count)"
@@ -1238,10 +1494,15 @@ readr::write_csv(vfd_results, file.path(out_dir, "primary_vfd_quasipoisson_resul
 readr::write_csv(vfd_model_diagnostics, file.path(out_dir, "primary_vfd_model_diagnostics.csv"))
 readr::write_csv(vfd_poisson_quasi_comparison, file.path(out_dir, "primary_vfd_poisson_vs_quasipoisson_diagnostics.csv"))
 readr::write_csv(vfd_calibration_by_decile, file.path(out_dir, "primary_vfd_calibration_by_fitted_decile.csv"))
+readr::write_csv(imv_duration_results, file.path(out_dir, "primary_imv_duration_quasipoisson_results.csv"))
+readr::write_csv(imv_duration_model_diagnostics, file.path(out_dir, "primary_imv_duration_model_diagnostics.csv"))
+readr::write_csv(imv_duration_poisson_quasi_comparison, file.path(out_dir, "primary_imv_duration_poisson_vs_quasipoisson_diagnostics.csv"))
+readr::write_csv(imv_duration_calibration_by_decile, file.path(out_dir, "primary_imv_duration_calibration_by_fitted_decile.csv"))
 readr::write_csv(no_peak_covid_cohort_summary, file.path(out_dir, "sensitivity_exclude_peak_covid_12m_cohort_summary.csv"))
 readr::write_csv(no_peak_covid_logistic_results, file.path(out_dir, "sensitivity_exclude_peak_covid_12m_mortality_day28_logistic_results.csv"))
 readr::write_csv(no_peak_covid_cox_results, file.path(out_dir, "sensitivity_exclude_peak_covid_12m_mortality_cox_results.csv"))
 readr::write_csv(no_peak_covid_vfd_results, file.path(out_dir, "sensitivity_exclude_peak_covid_12m_vfd_quasipoisson_results.csv"))
+readr::write_csv(no_peak_covid_imv_duration_results, file.path(out_dir, "sensitivity_exclude_peak_covid_12m_imv_duration_quasipoisson_results.csv"))
 readr::write_csv(no_peak_covid_pooling_table, file.path(out_dir, "sensitivity_exclude_peak_covid_12m_pooling_table.csv"))
 readr::write_csv(primary_vs_no_peak_covid_pooling_table, file.path(out_dir, "primary_vs_exclude_peak_covid_12m_pooling_table.csv"))
 
@@ -1259,9 +1520,14 @@ message(" - ", file.path(out_dir, "primary_vfd_quasipoisson_results.csv"))
 message(" - ", file.path(out_dir, "primary_vfd_model_diagnostics.csv"))
 message(" - ", file.path(out_dir, "primary_vfd_poisson_vs_quasipoisson_diagnostics.csv"))
 message(" - ", file.path(out_dir, "primary_vfd_calibration_by_fitted_decile.csv"))
+message(" - ", file.path(out_dir, "primary_imv_duration_quasipoisson_results.csv"))
+message(" - ", file.path(out_dir, "primary_imv_duration_model_diagnostics.csv"))
+message(" - ", file.path(out_dir, "primary_imv_duration_poisson_vs_quasipoisson_diagnostics.csv"))
+message(" - ", file.path(out_dir, "primary_imv_duration_calibration_by_fitted_decile.csv"))
 message(" - ", file.path(out_dir, "sensitivity_exclude_peak_covid_12m_cohort_summary.csv"))
 message(" - ", file.path(out_dir, "sensitivity_exclude_peak_covid_12m_mortality_day28_logistic_results.csv"))
 message(" - ", file.path(out_dir, "sensitivity_exclude_peak_covid_12m_mortality_cox_results.csv"))
 message(" - ", file.path(out_dir, "sensitivity_exclude_peak_covid_12m_vfd_quasipoisson_results.csv"))
+message(" - ", file.path(out_dir, "sensitivity_exclude_peak_covid_12m_imv_duration_quasipoisson_results.csv"))
 message(" - ", file.path(out_dir, "sensitivity_exclude_peak_covid_12m_pooling_table.csv"))
 message(" - ", file.path(out_dir, "primary_vs_exclude_peak_covid_12m_pooling_table.csv"))

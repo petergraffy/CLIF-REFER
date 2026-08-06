@@ -74,6 +74,7 @@ analysis_df <- readr::read_csv(input_path, show_col_types = FALSE, progress = FA
       }
     ),
     ventilator_free_days = as.numeric(ventilator_free_days),
+    imv_days_through_vfd = as.numeric(imv_days_through_vfd),
     age_10 = age_10 %||% (age / 10),
     pm25_per_5 = pm25_per_5 %||% (pm25_12m_zcta / 5),
     no2_per_10 = no2_per_10 %||% (no2_12m_zcta / 10),
@@ -91,7 +92,8 @@ analysis_df <- readr::read_csv(input_path, show_col_types = FALSE, progress = FA
     is.finite(mortality_ftime_days),
     mortality_ftime_days > 0,
     !is.na(mortality_event),
-    !is.na(ventilator_free_days)
+    !is.na(ventilator_free_days),
+    !is.na(imv_days_through_vfd)
   )
 
 site_name <- dplyr::first(stats::na.omit(analysis_df$site)) %||% "site"
@@ -124,12 +126,13 @@ pollutant_specs <- tibble::tribble(
 outcome_specs <- tibble::tribble(
   ~outcome, ~endpoint, ~y_label,
   glue("Mortality by day {mortality_prediction_day}"), "mortality", glue("Predicted mortality probability by day {mortality_prediction_day}"),
-  "Ventilator-free days", "vfd", "Predicted ventilator-free days"
+  "Ventilator-free days", "vfd", "Predicted ventilator-free days",
+  "IMV duration", "imv_duration", "Predicted IMV duration"
 )
 
 outcome_colors <- setNames(
-  c("#2166AC", "#B2182B"),
-  c(glue("Predicted mortality probability by day {mortality_prediction_day}"), "Predicted ventilator-free days")
+  c("#2166AC", "#B2182B", "#009E73"),
+  c(glue("Predicted mortality probability by day {mortality_prediction_day}"), "Predicted ventilator-free days", "Predicted IMV duration")
 )
 
 pollutant_x_labels <- list(
@@ -217,7 +220,7 @@ fit_curve <- function(outcome, endpoint, pollutant, term, raw_col, other_term, d
   if (by_subtype) covars <- c(covars, "arf_subtype")
 
   model_df <- analysis_df %>%
-    dplyr::select(mortality_day28_event, ventilator_free_days, all_of(covars)) %>%
+    dplyr::select(mortality_day28_event, ventilator_free_days, imv_days_through_vfd, all_of(covars)) %>%
     tidyr::drop_na() %>%
     mutate(
       sex = droplevels(sex),
@@ -232,11 +235,12 @@ fit_curve <- function(outcome, endpoint, pollutant, term, raw_col, other_term, d
   if (by_subtype) spline_term <- paste0(spline_term, " * arf_subtype")
   rhs <- paste(c(spline_term, rhs_covars), collapse = " + ")
 
-  fml <- if (endpoint == "mortality") {
-    as.formula(paste0("mortality_day28_event ~ ", rhs))
-  } else {
-    as.formula(paste0("ventilator_free_days ~ ", rhs))
-  }
+  response_col <- case_when(
+    endpoint == "mortality" ~ "mortality_day28_event",
+    endpoint == "imv_duration" ~ "imv_days_through_vfd",
+    TRUE ~ "ventilator_free_days"
+  )
+  fml <- as.formula(paste0(response_col, " ~ ", rhs))
 
   fit <- if (endpoint == "mortality") {
     stats::glm(fml, data = model_df, family = binomial(link = "logit"))
@@ -378,8 +382,8 @@ make_separate_rug_panel <- function(rugs, group_col, palette_values, pollutant_v
 apply_outcome_y_windows <- function(df) {
   df %>%
     mutate(
-      y_window_low = if_else(endpoint == "mortality", 0, 15),
-      y_window_high = if_else(endpoint == "mortality", 0.40, 28),
+      y_window_low = case_when(endpoint == "mortality" ~ 0, endpoint == "imv_duration" ~ 0, TRUE ~ 15),
+      y_window_high = case_when(endpoint == "mortality" ~ 0.40, endpoint == "imv_duration" ~ 13, TRUE ~ 28),
       estimate_plot = pmin(pmax(estimate, y_window_low), y_window_high),
       conf_low_plot = pmin(pmax(conf_low, y_window_low), y_window_high),
       conf_high_plot = pmin(pmax(conf_high, y_window_low), y_window_high)
@@ -391,17 +395,21 @@ make_y_window_df <- function(plot_df) {
     distinct(y_label, endpoint) %>%
     mutate(
       exposure_raw = min(plot_df$exposure_raw, na.rm = TRUE),
-      y_window_low = if_else(endpoint == "mortality", 0, 15),
-      y_window_high = if_else(endpoint == "mortality", 0.40, 28)
+      y_window_low = case_when(endpoint == "mortality" ~ 0, endpoint == "imv_duration" ~ 0, TRUE ~ 15),
+      y_window_high = case_when(endpoint == "mortality" ~ 0.40, endpoint == "imv_duration" ~ 13, TRUE ~ 28)
     ) %>%
     pivot_longer(c(y_window_low, y_window_high), names_to = "window_bound", values_to = "y_value")
 }
 
 label_outcome_axis <- function(x) {
-  if_else(
-    abs(x) >= 1,
-    label_number(accuracy = 1, trim = TRUE)(x),
-    label_number(accuracy = 0.01, trim = TRUE)(x)
+  ifelse(
+    abs(x) < 1e-8,
+    "0",
+    if_else(
+      abs(x) >= 1,
+      label_number(accuracy = 1, trim = TRUE)(x),
+      label_number(accuracy = 0.01, trim = TRUE)(x)
+    )
   )
 }
 
@@ -455,8 +463,8 @@ plot_curves <- function(curve_type_value, filename_stub) {
     }
   })
 
-  ggsave(file.path(fig_dir, paste0(filename_stub, ".png")), p, width = 12.5, height = 8.5, dpi = 300)
-  ggsave(file.path(fig_dir, paste0(filename_stub, ".pdf")), p, width = 12.5, height = 8.5)
+  ggsave(file.path(fig_dir, paste0(filename_stub, ".png")), p, width = 12.5, height = 11, dpi = 300)
+  ggsave(file.path(fig_dir, paste0(filename_stub, ".pdf")), p, width = 12.5, height = 11)
   p
 }
 
@@ -592,11 +600,13 @@ fit_mortality_group_curve <- function(group_var, group_label, pollutant, term, r
     )
 }
 
-fit_vfd_group_curve <- function(group_var, group_label, pollutant, term, raw_col, other_term, display_label) {
+fit_continuous_group_curve <- function(group_var, group_label, pollutant, term, raw_col, other_term, display_label,
+                                       outcome, endpoint) {
   covars <- c(term, other_term, base_covars, raw_col, group_var)
+  response_col <- if_else(endpoint == "imv_duration", "imv_days_through_vfd", "ventilator_free_days")
 
   model_df <- analysis_df %>%
-    dplyr::select(ventilator_free_days, all_of(covars)) %>%
+    dplyr::select(all_of(response_col), all_of(covars)) %>%
     tidyr::drop_na() %>%
     mutate(
       sex = droplevels(sex),
@@ -608,18 +618,18 @@ fit_vfd_group_curve <- function(group_var, group_label, pollutant, term, raw_col
   rhs_covars <- setdiff(drop_uninformative_covars(model_df, c(other_term, base_covars), exposure_terms), group_var)
   spline_term <- paste0("splines::ns(", term, ", df = ", spline_df, ") * ", group_var)
   rhs <- paste(c(spline_term, rhs_covars), collapse = " + ")
-  fml <- as.formula(paste0("ventilator_free_days ~ ", rhs))
+  fml <- as.formula(paste0(response_col, " ~ ", rhs))
   fit <- stats::glm(fml, data = model_df, family = quasipoisson(link = "log"))
 
   pred_grid <- make_group_prediction_grid(model_df, term, raw_col, other_term, group_var)
-  pred <- predict_outcome_scale(fit, pred_grid, "vfd")
+  pred <- predict_outcome_scale(fit, pred_grid, endpoint)
 
   pred_grid %>%
     mutate(
       site = site_name,
       curve_type = group_label,
-      outcome = "Ventilator-free days",
-      endpoint = "vfd",
+      outcome = outcome,
+      endpoint = endpoint,
       pollutant = pollutant,
       pollutant_label = display_label,
       group_var = group_var,
@@ -654,22 +664,28 @@ mortality_group_predictions <- bind_rows(
     pollutant_label = factor(pollutant_label, levels = pollutant_specs$display_label)
   )
 
-vfd_group_predictions <- bind_rows(
-  tidyr::crossing(group_var = c("sex", "race_ethnicity"), pollutant_specs) %>%
+continuous_group_predictions <- bind_rows(
+  tidyr::crossing(
+    group_var = c("sex", "race_ethnicity"),
+    pollutant_specs,
+    outcome_specs %>% filter(endpoint != "mortality")
+  ) %>%
     rowwise() %>%
-    do(fit_vfd_group_curve(
+    do(fit_continuous_group_curve(
       .$group_var,
       if_else(.$group_var == "sex", "By sex", "By race/ethnicity"),
       .$pollutant,
       .$term,
       .$raw_col,
       .$other_term,
-      .$display_label
+      .$display_label,
+      .$outcome,
+      .$endpoint
     )) %>%
     ungroup()
 )
 
-group_predictions <- bind_rows(mortality_group_predictions, vfd_group_predictions) %>%
+group_predictions <- bind_rows(mortality_group_predictions, continuous_group_predictions) %>%
   left_join(outcome_specs %>% select(outcome, y_label), by = "outcome") %>%
   mutate(
     outcome = factor(outcome, levels = outcome_specs$outcome),
@@ -754,8 +770,8 @@ plot_group_combined_curves <- function(group_var, group_label, filename_stub, pa
   })
 
   plot_width <- if (identical(group_var, "race_ethnicity")) 16 else 12.5
-  ggsave(file.path(fig_dir, paste0(filename_stub, ".png")), p, width = plot_width, height = 8.5, dpi = 300)
-  ggsave(file.path(fig_dir, paste0(filename_stub, ".pdf")), p, width = plot_width, height = 8.5)
+  ggsave(file.path(fig_dir, paste0(filename_stub, ".png")), p, width = plot_width, height = 11, dpi = 300)
+  ggsave(file.path(fig_dir, paste0(filename_stub, ".pdf")), p, width = plot_width, height = 11)
   p
 }
 

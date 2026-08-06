@@ -6,6 +6,7 @@
 #   - Mortality by day 28 after ARF onset: logistic regression, reported as OR
 #   - Ventilator-free days through day 28: quasi-Poisson regression, reported as
 #     mean ratio
+#   - IMV duration through day 28: quasi-Poisson regression, reported as mean ratio
 #
 # Subgroups:
 #   - Sex
@@ -136,6 +137,7 @@ subgroup_estimate <- function(data, outcome_label, outcome, family, pollutant, t
       n = nrow(model_df),
       events = if_else(.env$outcome == "mortality_day28_event", sum(model_df[[.env$outcome]] == 1L), NA_integer_),
       mean_vfd = if_else(.env$outcome == "ventilator_free_days", mean(model_df[[.env$outcome]], na.rm = TRUE), NA_real_),
+      mean_imv_days = if_else(.env$outcome == "imv_days_through_vfd", mean(model_df[[.env$outcome]], na.rm = TRUE), NA_real_),
       beta = NA_real_,
       std_error = NA_real_,
       statistic = NA_real_,
@@ -162,6 +164,7 @@ subgroup_estimate <- function(data, outcome_label, outcome, family, pollutant, t
       n = nrow(model_df),
       events = if_else(.env$outcome == "mortality_day28_event", sum(model_df[[.env$outcome]] == 1L), NA_integer_),
       mean_vfd = if_else(.env$outcome == "ventilator_free_days", mean(model_df[[.env$outcome]], na.rm = TRUE), NA_real_),
+      mean_imv_days = if_else(.env$outcome == "imv_days_through_vfd", mean(model_df[[.env$outcome]], na.rm = TRUE), NA_real_),
       estimate_ci = format_estimate(.data$estimate, .data$conf_low, .data$conf_high),
       p_value_formatted = format_p(.data$p_value),
       adjustment_covariates = paste(covars, collapse = "; "),
@@ -289,6 +292,7 @@ analysis_df <- readr::read_csv(input_path, show_col_types = FALSE, progress = FA
       }
     ),
     ventilator_free_days = as.numeric(ventilator_free_days),
+    imv_days_through_vfd = as.numeric(imv_days_through_vfd),
     age_10 = age_10 %||% (age / 10),
     pm25_per_5 = pm25_per_5 %||% (pm25_12m_zcta / 5),
     no2_per_10 = no2_per_10 %||% (no2_12m_zcta / 10),
@@ -306,7 +310,8 @@ analysis_df <- readr::read_csv(input_path, show_col_types = FALSE, progress = FA
     is.finite(mortality_ftime_days),
     mortality_ftime_days > 0,
     !is.na(mortality_day28_event),
-    !is.na(ventilator_free_days)
+    !is.na(ventilator_free_days),
+    !is.na(imv_days_through_vfd)
   )
 
 site_name <- dplyr::first(stats::na.omit(analysis_df$site)) %||% "site"
@@ -338,7 +343,8 @@ pollutant_specs <- tibble::tribble(
 outcome_specs <- tibble::tribble(
   ~outcome_label, ~outcome, ~family,
   "Mortality by day 28", "mortality_day28_event", list(stats::binomial(link = "logit")),
-  "Ventilator-free days", "ventilator_free_days", list(stats::quasipoisson(link = "log"))
+  "Ventilator-free days", "ventilator_free_days", list(stats::quasipoisson(link = "log")),
+  "IMV duration", "imv_days_through_vfd", list(stats::quasipoisson(link = "log"))
 )
 
 subgroup_vars <- c("sex", "race_ethnicity", "arf_subtype")
@@ -436,6 +442,7 @@ manuscript_summary <- subgroup_estimates %>%
     n,
     events,
     mean_vfd,
+    mean_imv_days,
     estimand,
     estimate_ci,
     p_value = p_value_formatted,

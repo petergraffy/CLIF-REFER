@@ -80,6 +80,7 @@ charlson_lookback_days <- as.integer(config$charlson_lookback_days %||% 365)
 charlson_include_index <- isTRUE(config$charlson_include_index_diagnoses %||% TRUE)
 imv_gap_hours <- as.numeric(config$imv_gap_hours %||% 6)
 successful_extubation_hours <- as.numeric(config$successful_extubation_hours %||% 48)
+imv_at_discharge_window_hours <- as.numeric(config$imv_at_discharge_window_hours %||% 2)
 primary_min_icu_los_hours <- as.numeric(config$primary_min_icu_los_hours %||% 24)
 
 stamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
@@ -915,6 +916,20 @@ imv_runs <- imv_records %>%
     .groups = "drop"
   )
 
+last_imv_times <- imv_runs %>%
+  group_by(hospitalization_id) %>%
+  summarise(
+    last_imv_start = max(imv_start, na.rm = TRUE),
+    last_imv_end = max(imv_end, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+last_vital_times <- vitals %>%
+  inner_join(cohort %>% select(hospitalization_id, arf_onset), by = "hospitalization_id") %>%
+  filter(recorded_dttm >= arf_onset) %>%
+  group_by(hospitalization_id) %>%
+  summarise(last_vital_time = max(recorded_dttm, na.rm = TRUE), .groups = "drop")
+
 death_times <- cohort %>%
   mutate(
     death_time = case_when(
@@ -1000,71 +1015,31 @@ vfd_outcomes <- cohort %>%
 event_data <- cohort %>%
   select(hospitalization_id, arf_onset, last_icu_out, discharge_dttm, discharge_category) %>%
   left_join(death_times, by = "hospitalization_id") %>%
+  left_join(last_vital_times, by = "hospitalization_id") %>%
+  left_join(last_imv_times, by = "hospitalization_id") %>%
   mutate(
     administrative_censor = arf_onset + days(followup_days),
-    censor_time = pmin(last_icu_out, discharge_dttm, administrative_censor, na.rm = TRUE)
-  )
-
-extubation_events <- imv_runs %>%
-  left_join(event_data, by = "hospitalization_id") %>%
-  filter(imv_start >= arf_onset) %>%
-  group_by(hospitalization_id) %>%
-  arrange(imv_start, .by_group = TRUE) %>%
-  mutate(next_imv_start = lead(imv_start)) %>%
-  ungroup() %>%
-  left_join(
-    imv_records %>%
-      filter(is_trach) %>%
-      select(hospitalization_id, trach_recorded_dttm = recorded_dttm),
-    by = "hospitalization_id",
-    relationship = "many-to-many"
-  ) %>%
-  group_by(hospitalization_id, imv_start, imv_end) %>%
-  mutate(
-    home_discharge_within_stability_window = str_detect(discharge_category %||% "", "\\bhome\\b") &
+    last_observed_time = coalesce(last_vital_time, discharge_dttm, last_icu_out, administrative_censor),
+    censor_time = pmin(last_icu_out, discharge_dttm, administrative_censor, na.rm = TRUE),
+    discharge_is_death_or_hospice = str_detect(discharge_category %||% "", "expired|death|deceased|died|hospice"),
+    discharge_is_ltach = str_detect(discharge_category %||% "", "ltach|long.?term acute|long term acute"),
+    imv_within_discharge_window = !is.na(last_imv_end) &
       !is.na(discharge_dttm) &
-      discharge_dttm >= imv_end &
-      discharge_dttm <= imv_end + hours(successful_extubation_hours),
-    trach_documented_after_extubation_before_discharge = any(
-      !is.na(trach_recorded_dttm) &
-        trach_recorded_dttm >= imv_end &
-        trach_recorded_dttm <= discharge_dttm,
-      na.rm = TRUE
+      abs(as.numeric(difftime(discharge_dttm, last_imv_end, units = "hours"))) <= imv_at_discharge_window_hours,
+    discharge_ltach_with_imv = discharge_is_ltach & !is.na(last_imv_end),
+    alternative_competing_event_name = case_when(
+      discharge_is_death_or_hospice ~ "death",
+      (!discharge_is_death_or_hospice) & (imv_within_discharge_window | discharge_ltach_with_imv) ~ "persistent_rf",
+      !is.na(last_imv_end) ~ "extubation",
+      TRUE ~ "censor"
     ),
-    successful_extubation_by_observed_stability = (
-      is.na(next_imv_start) |
-        as.numeric(difftime(next_imv_start, imv_end, units = "hours")) >= successful_extubation_hours
-    ) &
-      imv_end + hours(successful_extubation_hours) <= censor_time,
-    successful_extubation_by_home_discharge = home_discharge_within_stability_window &
-      !trach_documented_after_extubation_before_discharge
-  ) %>%
-  ungroup() %>%
-  filter(
-    successful_extubation_by_observed_stability |
-      successful_extubation_by_home_discharge
-  ) %>%
-  group_by(hospitalization_id) %>%
-  arrange(imv_end, .by_group = TRUE) %>%
-  slice(1) %>%
-  ungroup() %>%
-  transmute(
-    hospitalization_id,
-    extubation_time = imv_end,
-    extubation_definition = if_else(
-      successful_extubation_by_home_discharge,
-      "home_discharge_without_trach_before_48h",
-      "observed_48h_without_reintubation"
+    alternative_competing_event_time = case_when(
+      alternative_competing_event_name == "death" ~ coalesce(last_vital_time, death_time, discharge_dttm, last_observed_time),
+      alternative_competing_event_name == "persistent_rf" ~ coalesce(last_vital_time, discharge_dttm, last_observed_time),
+      alternative_competing_event_name == "extubation" ~ last_imv_end,
+      TRUE ~ censor_time
     )
   )
-
-persistent_rf_events <- imv_runs %>%
-  left_join(event_data, by = "hospitalization_id") %>%
-  group_by(hospitalization_id) %>%
-  slice_max(imv_end, n = 1, with_ties = FALSE) %>%
-  ungroup() %>%
-  filter(!is.na(last_icu_out), imv_end >= last_icu_out - hours(imv_gap_hours), last_icu_out <= censor_time) %>%
-  transmute(hospitalization_id, persistent_rf_time = last_icu_out)
 
 imv_competing_risk_cohort <- imv_days_through_vfd %>%
   filter(has_imv_after_arf) %>%
@@ -1072,28 +1047,18 @@ imv_competing_risk_cohort <- imv_days_through_vfd %>%
 
 events <- event_data %>%
   left_join(imv_competing_risk_cohort %>% mutate(has_imv_after_arf_for_competing_risks = TRUE), by = "hospitalization_id") %>%
-  left_join(extubation_events, by = "hospitalization_id") %>%
-  left_join(persistent_rf_events, by = "hospitalization_id") %>%
   mutate(
     has_imv_after_arf_for_competing_risks = coalesce(has_imv_after_arf_for_competing_risks, FALSE),
-    persistent_rf_time = if_else(
-      has_imv_after_arf_for_competing_risks & is.na(persistent_rf_time),
-      censor_time,
-      persistent_rf_time
+    event_name = if_else(has_imv_after_arf_for_competing_risks, alternative_competing_event_name, "censor"),
+    event_time = if_else(has_imv_after_arf_for_competing_risks, alternative_competing_event_time, censor_time),
+    extubation_definition = case_when(
+      event_name == "extubation" ~ "alive_nonhospice_nonltach_imv_discharge_status_after_last_imv",
+      event_name == "death" ~ "death_or_hospice_discharge",
+      event_name == "persistent_rf" & discharge_ltach_with_imv ~ "ltach_with_imv",
+      event_name == "persistent_rf" & imv_within_discharge_window ~ "imv_within_2h_of_discharge",
+      TRUE ~ NA_character_
     )
   ) %>%
-  rowwise() %>%
-  mutate(
-    event_times = list(if (has_imv_after_arf_for_competing_risks) {
-      c(death = death_time, extubation = extubation_time, persistent_rf = persistent_rf_time)
-    } else {
-      c()
-    }),
-    event_times = list(event_times[!is.na(event_times) & event_times <= censor_time]),
-    event_name = if (length(event_times) == 0) "censor" else names(event_times)[which.min(event_times)],
-    event_time = if (length(event_times) == 0) censor_time else min(event_times)
-  ) %>%
-  ungroup() %>%
   transmute(
     hospitalization_id,
     event_name,

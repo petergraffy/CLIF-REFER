@@ -30,7 +30,12 @@ if (!requireNamespace("renv", quietly = TRUE)) {
   install.packages("renv")
 }
 
+project_library <- renv::paths$library(project = repo)
+dir.create(project_library, recursive = TRUE, showWarnings = FALSE)
+.libPaths(c(project_library, .libPaths()))
+
 message("Restoring R package environment from: ", lockfile)
-renv::restore(project = repo, lockfile = lockfile, prompt = FALSE)
+message("Project library: ", project_library)
+renv::restore(project = repo, library = project_library, lockfile = lockfile, prompt = FALSE)
 
 message("renv restore complete.")

@@ -24,5 +24,6 @@
   "charlson_lookback_days": 365,
   "charlson_include_index_diagnoses": true,
   "imv_gap_hours": 6,
-  "successful_extubation_hours": 48
+  "successful_extubation_hours": 48,
+  "imv_at_discharge_window_hours": 2
 }

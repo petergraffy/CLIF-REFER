@@ -152,9 +152,18 @@ This sensitivity exports site-level, poolable result tables only; no patient-lev
 - `primary_sensitivity_models_run_status.csv`
 - `primary_sensitivity_models_cohort_summaries.csv`
 - `primary_sensitivity_3y_exposure_diagnostics.csv`
+- `site_inclusion_flow_counts.csv`
+- `site_inclusion_flow_counts_wide.csv`
+- `site_inclusion_flow_counts_dictionary.csv`
 
 The VFD diagnostic files are generated automatically at each site when the
 primary script runs. They provide the model-level dispersion diagnostics,
 Poisson versus quasi-Poisson exposure inference, and fitted-value decile
 calibration summaries needed to justify the quasi-Poisson mean model without
 sharing row-level data.
+
+The site inclusion-flow files are generated as the final pipeline step. They
+combine the all-CLIF denominator, ARF cohort construction, exposure/covariate
+availability, primary complete-case counts, IMV competing-risk assignment, and
+sensitivity cohort sizes into aggregate-only exports that can be pooled across
+sites.

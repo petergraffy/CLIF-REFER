@@ -151,6 +151,12 @@ step_log[[length(step_log) + 1]] <- run_step(
   sensitivity_args
 )
 
+step_log[[length(step_log) + 1]] <- run_step(
+  "Site inclusion-flow count export",
+  file.path(resubmission_dir, "07_export_inclusion_flow_counts.R"),
+  c(out_dir)
+)
+
 pipeline_manifest <- tibble(
   repo = repo,
   output_dir = normalizePath(out_dir, mustWork = FALSE),

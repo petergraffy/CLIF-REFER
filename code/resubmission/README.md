@@ -20,6 +20,11 @@ Sites should restore the R package environment before running the analysis:
 Rscript --vanilla code/resubmission/00_setup_renv.R
 ```
 
+On Windows, this script bootstraps `renv` into a writable user library, uses
+Posit Package Manager for CRAN binaries, and disables silent source-build
+fallbacks. If a site must use an institutional CRAN mirror, set
+`REFER_RENV_CRAN_REPO` before running the setup script.
+
 `00_run_full_resubmission_pipeline.R`
 
 This is the site-facing one-command runner. With no arguments, it first builds

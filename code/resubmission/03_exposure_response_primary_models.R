@@ -198,6 +198,8 @@ predict_outcome_scale <- function(fit, pred_grid, endpoint) {
   if (endpoint == "mortality") {
     pr <- predict(fit, newdata = pred_grid, type = "link", se.fit = TRUE)
     return(list(
+      link_estimate = pr$fit,
+      link_se = pr$se.fit,
       estimate = plogis(pr$fit),
       conf_low = plogis(pr$fit - 1.96 * pr$se.fit),
       conf_high = plogis(pr$fit + 1.96 * pr$se.fit)
@@ -206,6 +208,8 @@ predict_outcome_scale <- function(fit, pred_grid, endpoint) {
 
   pr <- predict(fit, newdata = pred_grid, type = "link", se.fit = TRUE)
   list(
+    link_estimate = pr$fit,
+    link_se = pr$se.fit,
     estimate = exp(pr$fit),
     conf_low = exp(pr$fit - 1.96 * pr$se.fit),
     conf_high = exp(pr$fit + 1.96 * pr$se.fit)
@@ -256,6 +260,8 @@ fit_curve <- function(outcome, endpoint, pollutant, term, raw_col, other_term, d
       endpoint = endpoint,
       pollutant = pollutant,
       pollutant_label = display_label,
+      link_estimate = pred$link_estimate,
+      link_se = pred$link_se,
       estimate = pred$estimate,
       conf_low = pred$conf_low,
       conf_high = pred$conf_high,
@@ -586,6 +592,8 @@ fit_mortality_group_curve <- function(group_var, group_label, pollutant, term, r
       pollutant_label = display_label,
       group_var = group_var,
       group_label = group_label,
+      link_estimate = pred$link_estimate,
+      link_se = pred$link_se,
       estimate = pred$estimate,
       conf_low = pred$conf_low,
       conf_high = pred$conf_high,
@@ -630,6 +638,8 @@ fit_continuous_group_curve <- function(group_var, group_label, pollutant, term, 
       pollutant_label = display_label,
       group_var = group_var,
       group_label = group_label,
+      link_estimate = pred$link_estimate,
+      link_se = pred$link_se,
       estimate = pred$estimate,
       conf_low = pred$conf_low,
       conf_high = pred$conf_high,

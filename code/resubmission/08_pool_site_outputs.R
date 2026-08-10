@@ -271,12 +271,21 @@ readr::write_csv(subgroup_interactions, file.path(out_dir, "pooled_subgroup_inte
 
 pool_prediction_curve <- function(tbl, id_cols, grid_n = 100) {
   if (!nrow(tbl)) return(tibble())
+  approx_safe <- function(x, y, xout) {
+    ok <- is.finite(x) & is.finite(y)
+    if (sum(ok) < 2) return(rep(NA_real_, length(xout)))
+    approx(x[ok], y[ok], xout = xout, rule = 2, ties = "ordered")$y
+  }
+  if (!"link_estimate" %in% names(tbl)) tbl$link_estimate <- NA_real_
+  if (!"link_se" %in% names(tbl)) tbl$link_se <- NA_real_
   tbl <- tbl %>%
     mutate(
       exposure_raw = as.numeric(exposure_raw),
       estimate = as.numeric(estimate),
       conf_low = as.numeric(conf_low),
       conf_high = as.numeric(conf_high),
+      link_estimate = suppressWarnings(as.numeric(link_estimate)),
+      link_se = suppressWarnings(as.numeric(link_se)),
       se = pmax((conf_high - conf_low) / (2 * 1.959963984540054), 1e-8)
     ) %>%
     filter(is.finite(exposure_raw), is.finite(estimate), is.finite(se), se > 0)
@@ -297,28 +306,59 @@ pool_prediction_curve <- function(tbl, id_cols, grid_n = 100) {
         group_modify(function(site_df, site_key) {
           tibble(
             exposure_raw = grid,
-            estimate = approx(site_df$exposure_raw, site_df$estimate, xout = grid, rule = 2, ties = "ordered")$y,
-            conf_low = approx(site_df$exposure_raw, site_df$conf_low, xout = grid, rule = 2, ties = "ordered")$y,
-            conf_high = approx(site_df$exposure_raw, site_df$conf_high, xout = grid, rule = 2, ties = "ordered")$y,
-            se = approx(site_df$exposure_raw, site_df$se, xout = grid, rule = 2, ties = "ordered")$y,
+            estimate = approx_safe(site_df$exposure_raw, site_df$estimate, grid),
+            conf_low = approx_safe(site_df$exposure_raw, site_df$conf_low, grid),
+            conf_high = approx_safe(site_df$exposure_raw, site_df$conf_high, grid),
+            se = approx_safe(site_df$exposure_raw, site_df$se, grid),
+            link_estimate = approx_safe(site_df$exposure_raw, site_df$link_estimate, grid),
+            link_se = approx_safe(site_df$exposure_raw, site_df$link_se, grid),
             n = max(site_df$n, na.rm = TRUE),
             events = max(site_df$events, na.rm = TRUE)
           )
         }) %>%
         ungroup()
-      interp %>%
-        mutate(weight = 1 / pmax(se, 1e-8)^2) %>%
-        group_by(exposure_raw) %>%
-        summarise(
-          n_sites = n_distinct(site),
-          n_total = sum(n, na.rm = TRUE),
-          events_total = sum(events, na.rm = TRUE),
-          estimate = sum(weight * estimate) / sum(weight),
-          se = sqrt(1 / sum(weight)),
-          conf_low = estimate - 1.959963984540054 * se,
-          conf_high = estimate + 1.959963984540054 * se,
-          .groups = "drop"
-        )
+      endpoint_value <- as.character(.y$endpoint[[1]] %||% NA_character_)
+      link_site_summary <- interp %>%
+        group_by(site) %>%
+        summarise(has_link = sum(is.finite(link_estimate) & is.finite(link_se) & link_se > 0) >= 2, .groups = "drop")
+      has_link <- nrow(link_site_summary) > 0 && all(link_site_summary$has_link)
+      if (has_link && endpoint_value %in% c("mortality", "vfd")) {
+        interp %>%
+          filter(is.finite(link_estimate), is.finite(link_se), link_se > 0) %>%
+          mutate(weight = 1 / link_se^2) %>%
+          group_by(exposure_raw) %>%
+          summarise(
+            n_sites = n_distinct(site),
+            n_total = sum(n, na.rm = TRUE),
+            events_total = sum(events, na.rm = TRUE),
+            link_estimate = sum(weight * link_estimate) / sum(weight),
+            link_se = sqrt(1 / sum(weight)),
+            .groups = "drop"
+          ) %>%
+          mutate(
+            estimate = if (identical(endpoint_value, "mortality")) plogis(link_estimate) else exp(link_estimate),
+            conf_low = if (identical(endpoint_value, "mortality")) plogis(link_estimate - 1.959963984540054 * link_se) else exp(link_estimate - 1.959963984540054 * link_se),
+            conf_high = if (identical(endpoint_value, "mortality")) plogis(link_estimate + 1.959963984540054 * link_se) else exp(link_estimate + 1.959963984540054 * link_se),
+            se = NA_real_
+          )
+      } else {
+        interp %>%
+          filter(is.finite(estimate), is.finite(se), se > 0) %>%
+          mutate(weight = 1 / pmax(se, 1e-8)^2) %>%
+          group_by(exposure_raw) %>%
+          summarise(
+            n_sites = n_distinct(site),
+            n_total = sum(n, na.rm = TRUE),
+            events_total = sum(events, na.rm = TRUE),
+            estimate = sum(weight * estimate) / sum(weight),
+            se = sqrt(1 / sum(weight)),
+            conf_low = estimate - 1.959963984540054 * se,
+            conf_high = estimate + 1.959963984540054 * se,
+            link_estimate = NA_real_,
+            link_se = NA_real_,
+            .groups = "drop"
+          )
+      }
     }) %>%
     ungroup()
 }

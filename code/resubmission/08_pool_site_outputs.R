@@ -276,6 +276,29 @@ pool_prediction_curve <- function(tbl, id_cols, grid_n = 100) {
     if (sum(ok) < 2) return(rep(NA_real_, length(xout)))
     approx(x[ok], y[ok], xout = xout, rule = 2, ties = "ordered")$y
   }
+  derive_link <- function(endpoint, estimate, conf_low, conf_high) {
+    endpoint <- as.character(endpoint)
+    out_est <- rep(NA_real_, length(estimate))
+    out_se <- rep(NA_real_, length(estimate))
+
+    mort_ok <- endpoint == "mortality" &
+      is.finite(estimate) & estimate > 0 & estimate < 1 &
+      is.finite(conf_low) & conf_low > 0 & conf_low < 1 &
+      is.finite(conf_high) & conf_high > 0 & conf_high < 1 &
+      conf_high > conf_low
+    out_est[mort_ok] <- stats::qlogis(estimate[mort_ok])
+    out_se[mort_ok] <- (stats::qlogis(conf_high[mort_ok]) - stats::qlogis(conf_low[mort_ok])) / (2 * 1.959963984540054)
+
+    vfd_ok <- endpoint == "vfd" &
+      is.finite(estimate) & estimate > 0 &
+      is.finite(conf_low) & conf_low > 0 &
+      is.finite(conf_high) & conf_high > 0 &
+      conf_high > conf_low
+    out_est[vfd_ok] <- log(estimate[vfd_ok])
+    out_se[vfd_ok] <- (log(conf_high[vfd_ok]) - log(conf_low[vfd_ok])) / (2 * 1.959963984540054)
+
+    tibble(link_estimate_derived = out_est, link_se_derived = out_se)
+  }
   if (!"link_estimate" %in% names(tbl)) tbl$link_estimate <- NA_real_
   if (!"link_se" %in% names(tbl)) tbl$link_se <- NA_real_
   tbl <- tbl %>%
@@ -288,6 +311,12 @@ pool_prediction_curve <- function(tbl, id_cols, grid_n = 100) {
       link_se = suppressWarnings(as.numeric(link_se)),
       se = pmax((conf_high - conf_low) / (2 * 1.959963984540054), 1e-8)
     ) %>%
+    bind_cols(derive_link(.$endpoint, .$estimate, .$conf_low, .$conf_high)) %>%
+    mutate(
+      link_estimate = coalesce(link_estimate, link_estimate_derived),
+      link_se = coalesce(link_se, link_se_derived)
+    ) %>%
+    select(-link_estimate_derived, -link_se_derived) %>%
     filter(is.finite(exposure_raw), is.finite(estimate), is.finite(se), se > 0)
 
   tbl %>%
@@ -381,7 +410,8 @@ primary_curve_sites <- bind_rows(
       endpoint == "vfd" ~ "Predicted ventilator-free days",
       TRUE ~ y_label
     )
-  )
+  ) %>%
+  filter(!(group_var == "sex" & !group_level %in% c("Female", "Male")))
 
 primary_curve_ids <- c("prediction_family", "curve_type", "outcome", "endpoint", "pollutant", "pollutant_label", "group_var", "group_level", "curve_label", "y_label")
 primary_curve_pooled <- pool_prediction_curve(primary_curve_sites, primary_curve_ids)

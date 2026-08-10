@@ -243,7 +243,7 @@ flow_long <- bind_rows(
     if (nrow(analysis_df) && "patient_id" %in% names(analysis_df)) n_distinct(analysis_df$patient_id[primary_complete]) else NA_integer_,
     if (!is.na(n_arf_primary) && !is.na(n_primary_complete)) n_arf_primary - n_primary_complete else NA_integer_,
     source_file = "analysis_dataset_reviewer_optimized.csv",
-    notes = "Complete mortality day 28, VFD, PM2.5, NO2, and primary adjustment covariates."
+    notes = "Complete mortality day 28, VFD, IMV duration, PM2.5, NO2, and primary adjustment covariates."
   ),
   add_flow_row(
     10,

@@ -11,7 +11,8 @@
 #      endpoint.
 #   2. Keep Cox proportional hazards models for mortality after ARF onset as a
 #      sensitivity analysis.
-#   3. Replace invasive ventilation duration with ventilator-free days through day 28.
+#   3. Make ventilator-free days through day 28 the primary ventilation endpoint,
+#      while exporting supplemental raw IMV-duration models.
 #   4. Use the expanded adjustment set: demographics, calendar year, Charlson, and
 #      available social vulnerability covariates.
 
@@ -535,6 +536,13 @@ continuous_outcome_specs <- list(
     mean_col = "mean_vfd",
     prefix = "vfd",
     ceiling = function() vfd_days
+  ),
+  imv_duration = list(
+    outcome_col = "imv_days_through_vfd",
+    label = function() glue("IMV duration through day {vfd_days}"),
+    mean_col = "mean_imv_days",
+    prefix = "imv_days",
+    ceiling = function() vfd_days
   )
 )
 
@@ -1024,13 +1032,29 @@ fit_primary_model_set <- function(df) {
     ~ fit_vfd_model(df, .x$exposure_terms, .x$model_label, adjustment_covars)
   )
 
+  imv_duration_fits <- purrr::map(
+    model_specs,
+    ~ fit_continuous_quasipoisson_model(
+      df,
+      .x$exposure_terms,
+      .x$model_label,
+      adjustment_covars,
+      continuous_outcome_specs$imv_duration$outcome_col
+    )
+  )
+
   list(
     logistic_fits = logistic_fits,
     cox_fits = cox_fits,
     vfd_fits = vfd_fits,
+    imv_duration_fits = imv_duration_fits,
     logistic_results = purrr::map_dfr(logistic_fits, ~ tidy_logistic(.x$fit, .x$model_df, .x$exposure_terms, .x$model_label, .x$covars)),
     cox_results = purrr::map_dfr(cox_fits, ~ tidy_cox(.x$fit, .x$model_df, .x$exposure_terms, .x$model_label, .x$covars)),
-    vfd_results = purrr::map_dfr(vfd_fits, ~ tidy_vfd(.x$fit, .x$model_df, .x$exposure_terms, .x$model_label, .x$covars))
+    vfd_results = purrr::map_dfr(vfd_fits, ~ tidy_vfd(.x$fit, .x$model_df, .x$exposure_terms, .x$model_label, .x$covars)),
+    imv_duration_results = purrr::map_dfr(
+      imv_duration_fits,
+      ~ tidy_continuous_quasipoisson(.x$fit, .x$model_df, .x$exposure_terms, .x$model_label, .x$covars, continuous_outcome_specs$imv_duration)
+    )
   )
 }
 
@@ -1047,6 +1071,8 @@ summarise_modeling_cohort <- function(df, sensitivity_label, primary_n = NA_inte
     median_mortality_followup_days = median(df$mortality_ftime_days, na.rm = TRUE),
     mean_vfd = mean(df$ventilator_free_days, na.rm = TRUE),
     median_vfd = median(df$ventilator_free_days, na.rm = TRUE),
+    mean_imv_days = mean(df$imv_days_through_vfd, na.rm = TRUE),
+    median_imv_days = median(df$imv_days_through_vfd, na.rm = TRUE),
     vfd_horizon_days = vfd_days,
     mean_charlson = mean(df$charlson_score, na.rm = TRUE),
     median_charlson = median(df$charlson_score, na.rm = TRUE),
@@ -1056,7 +1082,7 @@ summarise_modeling_cohort <- function(df, sensitivity_label, primary_n = NA_inte
   )
 }
 
-make_primary_pooling_table <- function(logistic_tbl, cox_tbl, vfd_tbl, sensitivity_label,
+make_primary_pooling_table <- function(logistic_tbl, cox_tbl, vfd_tbl, imv_duration_tbl, sensitivity_label,
                                        covid_exclude_start = as.Date(NA),
                                        covid_exclude_end = as.Date(NA)) {
   bind_rows(
@@ -1074,6 +1100,7 @@ make_primary_pooling_table <- function(logistic_tbl, cox_tbl, vfd_tbl, sensitivi
         n,
         events,
         mean_vfd = NA_real_,
+        mean_imv_days = NA_real_,
         estimate = odds_ratio,
         conf_low,
         conf_high,
@@ -1095,6 +1122,7 @@ make_primary_pooling_table <- function(logistic_tbl, cox_tbl, vfd_tbl, sensitivi
         n,
         events,
         mean_vfd = NA_real_,
+        mean_imv_days = NA_real_,
         estimate = hazard_ratio,
         conf_low,
         conf_high,
@@ -1116,6 +1144,29 @@ make_primary_pooling_table <- function(logistic_tbl, cox_tbl, vfd_tbl, sensitivi
         n,
         events = NA_integer_,
         mean_vfd,
+        mean_imv_days = NA_real_,
+        estimate = ratio_of_means,
+        conf_low,
+        conf_high,
+        p_value,
+        dispersion,
+        adjustment_set
+      ),
+    imv_duration_tbl %>%
+      transmute(
+        site,
+        sensitivity = sensitivity_label,
+        covid_exclude_start,
+        covid_exclude_end,
+        outcome,
+        analysis_model = "Quasi-Poisson regression",
+        pollutant_model = model,
+        term,
+        effect_measure = "ratio_of_means",
+        n,
+        events = NA_integer_,
+        mean_vfd = NA_real_,
+        mean_imv_days,
         estimate = ratio_of_means,
         conf_low,
         conf_high,
@@ -1152,12 +1203,26 @@ primary_model_set <- fit_primary_model_set(analysis_df)
 logistic_fits <- primary_model_set$logistic_fits
 cox_fits <- primary_model_set$cox_fits
 vfd_fits <- primary_model_set$vfd_fits
+imv_duration_fits <- primary_model_set$imv_duration_fits
 logistic_results <- primary_model_set$logistic_results
 cox_results <- primary_model_set$cox_results
 vfd_results <- primary_model_set$vfd_results
+imv_duration_results <- primary_model_set$imv_duration_results
 vfd_model_diagnostics <- purrr::map_dfr(vfd_fits, diagnose_vfd_model)
 vfd_poisson_quasi_comparison <- purrr::map_dfr(vfd_fits, compare_vfd_poisson_quasi)
 vfd_calibration_by_decile <- purrr::map_dfr(vfd_fits, calibrate_vfd_model)
+imv_duration_model_diagnostics <- purrr::map_dfr(
+  imv_duration_fits,
+  ~ diagnose_continuous_quasipoisson_model(.x, continuous_outcome_specs$imv_duration)
+)
+imv_duration_poisson_quasi_comparison <- purrr::map_dfr(
+  imv_duration_fits,
+  ~ compare_continuous_poisson_quasi(.x, continuous_outcome_specs$imv_duration)
+)
+imv_duration_calibration_by_decile <- purrr::map_dfr(
+  imv_duration_fits,
+  ~ calibrate_continuous_model(.x, continuous_outcome_specs$imv_duration)
+)
 
 covid_exclude_start <- as.Date(Sys.getenv("REFER_COVID_EXCLUDE_START", "2020-03-01"))
 covid_exclude_end <- as.Date(Sys.getenv("REFER_COVID_EXCLUDE_END", "2021-02-28"))
@@ -1173,6 +1238,7 @@ no_peak_covid_model_set <- fit_primary_model_set(analysis_df_no_peak_covid)
 no_peak_covid_logistic_results <- no_peak_covid_model_set$logistic_results
 no_peak_covid_cox_results <- no_peak_covid_model_set$cox_results
 no_peak_covid_vfd_results <- no_peak_covid_model_set$vfd_results
+no_peak_covid_imv_duration_results <- no_peak_covid_model_set$imv_duration_results
 
 no_peak_covid_cohort_summary <- summarise_modeling_cohort(
   analysis_df_no_peak_covid,
@@ -1190,6 +1256,7 @@ primary_pooling_table <- make_primary_pooling_table(
   logistic_results,
   cox_results,
   vfd_results,
+  imv_duration_results,
   sensitivity_label = "primary"
 )
 
@@ -1197,6 +1264,7 @@ no_peak_covid_pooling_table <- make_primary_pooling_table(
   no_peak_covid_logistic_results,
   no_peak_covid_cox_results,
   no_peak_covid_vfd_results,
+  no_peak_covid_imv_duration_results,
   sensitivity_label = "exclude_peak_covid_12m",
   covid_exclude_start = covid_exclude_start,
   covid_exclude_end = covid_exclude_end
@@ -1422,10 +1490,15 @@ readr::write_csv(vfd_results, file.path(out_dir, "primary_vfd_quasipoisson_resul
 readr::write_csv(vfd_model_diagnostics, file.path(out_dir, "primary_vfd_model_diagnostics.csv"))
 readr::write_csv(vfd_poisson_quasi_comparison, file.path(out_dir, "primary_vfd_poisson_vs_quasipoisson_diagnostics.csv"))
 readr::write_csv(vfd_calibration_by_decile, file.path(out_dir, "primary_vfd_calibration_by_fitted_decile.csv"))
+readr::write_csv(imv_duration_results, file.path(out_dir, "primary_imv_duration_quasipoisson_results.csv"))
+readr::write_csv(imv_duration_model_diagnostics, file.path(out_dir, "primary_imv_duration_model_diagnostics.csv"))
+readr::write_csv(imv_duration_poisson_quasi_comparison, file.path(out_dir, "primary_imv_duration_poisson_vs_quasipoisson_diagnostics.csv"))
+readr::write_csv(imv_duration_calibration_by_decile, file.path(out_dir, "primary_imv_duration_calibration_by_fitted_decile.csv"))
 readr::write_csv(no_peak_covid_cohort_summary, file.path(out_dir, "sensitivity_exclude_peak_covid_12m_cohort_summary.csv"))
 readr::write_csv(no_peak_covid_logistic_results, file.path(out_dir, "sensitivity_exclude_peak_covid_12m_mortality_day28_logistic_results.csv"))
 readr::write_csv(no_peak_covid_cox_results, file.path(out_dir, "sensitivity_exclude_peak_covid_12m_mortality_cox_results.csv"))
 readr::write_csv(no_peak_covid_vfd_results, file.path(out_dir, "sensitivity_exclude_peak_covid_12m_vfd_quasipoisson_results.csv"))
+readr::write_csv(no_peak_covid_imv_duration_results, file.path(out_dir, "sensitivity_exclude_peak_covid_12m_imv_duration_quasipoisson_results.csv"))
 readr::write_csv(no_peak_covid_pooling_table, file.path(out_dir, "sensitivity_exclude_peak_covid_12m_pooling_table.csv"))
 readr::write_csv(primary_vs_no_peak_covid_pooling_table, file.path(out_dir, "primary_vs_exclude_peak_covid_12m_pooling_table.csv"))
 
@@ -1443,9 +1516,14 @@ message(" - ", file.path(out_dir, "primary_vfd_quasipoisson_results.csv"))
 message(" - ", file.path(out_dir, "primary_vfd_model_diagnostics.csv"))
 message(" - ", file.path(out_dir, "primary_vfd_poisson_vs_quasipoisson_diagnostics.csv"))
 message(" - ", file.path(out_dir, "primary_vfd_calibration_by_fitted_decile.csv"))
+message(" - ", file.path(out_dir, "primary_imv_duration_quasipoisson_results.csv"))
+message(" - ", file.path(out_dir, "primary_imv_duration_model_diagnostics.csv"))
+message(" - ", file.path(out_dir, "primary_imv_duration_poisson_vs_quasipoisson_diagnostics.csv"))
+message(" - ", file.path(out_dir, "primary_imv_duration_calibration_by_fitted_decile.csv"))
 message(" - ", file.path(out_dir, "sensitivity_exclude_peak_covid_12m_cohort_summary.csv"))
 message(" - ", file.path(out_dir, "sensitivity_exclude_peak_covid_12m_mortality_day28_logistic_results.csv"))
 message(" - ", file.path(out_dir, "sensitivity_exclude_peak_covid_12m_mortality_cox_results.csv"))
 message(" - ", file.path(out_dir, "sensitivity_exclude_peak_covid_12m_vfd_quasipoisson_results.csv"))
+message(" - ", file.path(out_dir, "sensitivity_exclude_peak_covid_12m_imv_duration_quasipoisson_results.csv"))
 message(" - ", file.path(out_dir, "sensitivity_exclude_peak_covid_12m_pooling_table.csv"))
 message(" - ", file.path(out_dir, "primary_vs_exclude_peak_covid_12m_pooling_table.csv"))

@@ -6,7 +6,7 @@ The goal is not to expand the analysis in every direction. It implements only th
 
 1. Use mortality by day 28 after ARF onset as the primary binary mortality estimand.
 2. Keep Cox proportional hazards models for mortality after ARF onset as a sensitivity analysis.
-3. Replace raw invasive ventilation duration with ventilator-free days through day 28.
+3. Use ventilator-free days through day 28 as the primary ventilation-duration estimand, while retaining raw invasive mechanical ventilation duration as a supplemental site export.
 4. Use the stronger covariate set now available: age, sex, race/ethnicity, calendar year, Charlson score, and available ACS/social vulnerability covariates.
 5. Add a COVID-era sensitivity analysis excluding the 12-month period most affected by early pandemic care disruptions.
 
@@ -147,10 +147,15 @@ This sensitivity exports site-level, poolable result tables only; no patient-lev
 - `primary_vfd_model_diagnostics.csv`
 - `primary_vfd_poisson_vs_quasipoisson_diagnostics.csv`
 - `primary_vfd_calibration_by_fitted_decile.csv`
+- `primary_imv_duration_quasipoisson_results.csv`
+- `primary_imv_duration_model_diagnostics.csv`
+- `primary_imv_duration_poisson_vs_quasipoisson_diagnostics.csv`
+- `primary_imv_duration_calibration_by_fitted_decile.csv`
 - `sensitivity_exclude_peak_covid_12m_cohort_summary.csv`
 - `sensitivity_exclude_peak_covid_12m_mortality_day28_logistic_results.csv`
 - `sensitivity_exclude_peak_covid_12m_mortality_cox_results.csv`
 - `sensitivity_exclude_peak_covid_12m_vfd_quasipoisson_results.csv`
+- `sensitivity_exclude_peak_covid_12m_imv_duration_quasipoisson_results.csv`
 - `sensitivity_exclude_peak_covid_12m_pooling_table.csv`
 - `primary_vs_exclude_peak_covid_12m_pooling_table.csv`
 - `primary_sensitivity_models_pooling_table.csv`
@@ -161,11 +166,11 @@ This sensitivity exports site-level, poolable result tables only; no patient-lev
 - `site_inclusion_flow_counts_wide.csv`
 - `site_inclusion_flow_counts_dictionary.csv`
 
-The VFD diagnostic files are generated automatically at each site when the
-primary script runs. They provide the model-level dispersion diagnostics,
-Poisson versus quasi-Poisson exposure inference, and fitted-value decile
-calibration summaries needed to justify the quasi-Poisson mean model without
-sharing row-level data.
+The VFD and supplemental IMV-duration diagnostic files are generated
+automatically at each site when the primary script runs. They provide the
+model-level dispersion diagnostics, Poisson versus quasi-Poisson exposure
+inference, and fitted-value decile calibration summaries needed to justify the
+quasi-Poisson mean model without sharing row-level data.
 
 The site inclusion-flow files are generated as the final pipeline step. They
 combine the all-CLIF denominator, ARF cohort construction, exposure/covariate

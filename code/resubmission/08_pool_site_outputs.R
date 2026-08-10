@@ -150,6 +150,7 @@ normalise_effect_table <- function(tbl, analysis_family, estimate_col, effect_me
 primary_effects <- bind_rows(
   normalise_effect_table(read_sites("primary_mortality_day28_logistic_results.csv"), "Primary mortality", "odds_ratio", "odds_ratio"),
   normalise_effect_table(read_sites("primary_vfd_quasipoisson_results.csv"), "Primary VFD", "ratio_of_means", "ratio_of_means"),
+  normalise_effect_table(read_sites("primary_imv_duration_quasipoisson_results.csv"), "Supplemental IMV duration", "ratio_of_means", "ratio_of_means"),
   normalise_effect_table(read_sites("primary_mortality_cox_results.csv"), "Mortality Cox sensitivity", "hazard_ratio", "hazard_ratio")
 )
 
@@ -161,7 +162,6 @@ fine_gray_effects <- normalise_effect_table(
 )
 
 sensitivity_effects <- read_sites("primary_sensitivity_models_pooling_table.csv") %>%
-  filter(!str_detect(outcome, regex("imv|invasive|ventilation duration", ignore_case = TRUE))) %>%
   mutate(
     analysis_family = "Sensitivity",
     estimate = as.numeric(estimate),
@@ -515,6 +515,7 @@ forest_primary <- bind_rows(
   primary_pooled %>% mutate(site = "Pooled", row_type = "Pooled")
 ) %>%
   filter(model %in% c("PM25 single-pollutant", "NO2 single-pollutant", "PM25 + NO2")) %>%
+  filter(!str_detect(outcome, regex("imv|invasive|ventilation duration", ignore_case = TRUE))) %>%
   mutate(
     site = fct_relevel(factor(site), "Pooled", after = Inf),
     label = paste(site, term, sep = " | "),
@@ -1061,6 +1062,7 @@ write_plot(p_forest_fg, "pooled_fine_gray_effect_forest", width = 15, height = 1
 
 p_forest_sens <- sensitivity_pooled %>%
   filter(term %in% c("pm25_per_5", "no2_per_10")) %>%
+  filter(!str_detect(outcome, regex("imv|invasive|ventilation duration", ignore_case = TRUE))) %>%
   mutate(label = paste(sensitivity, outcome, analysis_model, term, sep = " | ")) %>%
   ggplot(aes(x = estimate, y = fct_rev(label), xmin = conf_low, xmax = conf_high, colour = pollutant)) +
   geom_vline(xintercept = 1, linetype = "dashed", colour = "grey50") +

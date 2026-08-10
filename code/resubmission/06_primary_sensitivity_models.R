@@ -194,11 +194,10 @@ drop_uninformative_covars <- function(model_df, covars, exposure_terms) {
 fit_model_set <- function(df, sensitivity, exposure_terms, pollutant_model, include_sofa = FALSE,
                           mortality_outcome = "mortality_day28_event",
                           vfd_outcome = "ventilator_free_days",
-                          imv_duration_outcome = "imv_days_through_vfd",
                           cox_time = "mortality_ftime_days",
                           cox_event = "mortality_event") {
   covars <- c(exposure_terms, base_adjustment_covars(df, include_sofa))
-  needed <- c(mortality_outcome, vfd_outcome, imv_duration_outcome, cox_time, cox_event, covars)
+  needed <- c(mortality_outcome, vfd_outcome, cox_time, cox_event, covars)
   missing_needed <- setdiff(needed, names(df))
   if (length(missing_needed)) {
     return(list(results = tibble(), status = tibble(
@@ -212,8 +211,7 @@ fit_model_set <- function(df, sensitivity, exposure_terms, pollutant_model, incl
       outcome_type,
       logistic = mortality_outcome,
       cox = c(cox_time, cox_event),
-      vfd = vfd_outcome,
-      imv_duration = imv_duration_outcome
+      vfd = vfd_outcome
     )
     model_df <- df %>%
       dplyr::select(all_of(c(response_cols, covars))) %>%
@@ -234,7 +232,7 @@ fit_model_set <- function(df, sensitivity, exposure_terms, pollutant_model, incl
           site = site_name, sensitivity, outcome = mortality_outcome,
           analysis_model = "Logistic regression", pollutant_model, term,
           effect_measure = "odds_ratio", n = nrow(model_df),
-          events = sum(model_df[[mortality_outcome]] == 1L), mean_vfd = NA_real_, mean_imv_days = NA_real_,
+          events = sum(model_df[[mortality_outcome]] == 1L), mean_vfd = NA_real_,
           estimate, conf_low = conf.low, conf_high = conf.high, p_value = p.value,
           dispersion = NA_real_, adjustment_set = paste(setdiff(covars_i, exposure_terms), collapse = " + ")
         ))
@@ -253,13 +251,13 @@ fit_model_set <- function(df, sensitivity, exposure_terms, pollutant_model, incl
           site = site_name, sensitivity, outcome = "mortality_time_to_event",
           analysis_model = "Cox proportional hazards", pollutant_model, term,
           effect_measure = "hazard_ratio", n = nrow(model_df),
-          events = sum(model_df[[cox_event]] == 1L), mean_vfd = NA_real_, mean_imv_days = NA_real_,
+          events = sum(model_df[[cox_event]] == 1L), mean_vfd = NA_real_,
           estimate, conf_low = conf.low, conf_high = conf.high, p_value = p.value,
           dispersion = NA_real_, adjustment_set = paste(setdiff(covars_i, exposure_terms), collapse = " + ")
         ))
     }
 
-    continuous_outcome <- if (outcome_type == "imv_duration") imv_duration_outcome else vfd_outcome
+    continuous_outcome <- vfd_outcome
     fit <- stats::glm(as.formula(paste0(continuous_outcome, " ~ ", rhs)), data = model_df, family = quasipoisson("log"))
     broom::tidy(fit) %>%
       filter(term %in% exposure_terms) %>%
@@ -268,8 +266,7 @@ fit_model_set <- function(df, sensitivity, exposure_terms, pollutant_model, incl
         site = site_name, sensitivity, outcome = continuous_outcome,
         analysis_model = "Quasi-Poisson regression", pollutant_model, term,
         effect_measure = "ratio_of_means", n = nrow(model_df), events = NA_integer_,
-        mean_vfd = if (outcome_type == "vfd") mean(model_df[[vfd_outcome]], na.rm = TRUE) else NA_real_,
-        mean_imv_days = if (outcome_type == "imv_duration") mean(model_df[[imv_duration_outcome]], na.rm = TRUE) else NA_real_,
+        mean_vfd = mean(model_df[[vfd_outcome]], na.rm = TRUE),
         estimate = exp(beta),
         conf_low = exp(beta - 1.96 * std.error),
         conf_high = exp(beta + 1.96 * std.error),
@@ -282,15 +279,13 @@ fit_model_set <- function(df, sensitivity, exposure_terms, pollutant_model, incl
   logistic_results <- run_one("logistic")
   cox_results <- run_one("cox")
   vfd_results <- run_one("vfd")
-  imv_duration_results <- run_one("imv_duration")
-  results <- bind_rows(logistic_results, cox_results, vfd_results, imv_duration_results)
+  results <- bind_rows(logistic_results, cox_results, vfd_results)
   completed_models <- c(
     if (nrow(logistic_results)) "logistic" else character(),
     if (nrow(cox_results)) "cox" else character(),
-    if (nrow(vfd_results)) "quasi_poisson_vfd" else character(),
-    if (nrow(imv_duration_results)) "quasi_poisson_imv_duration" else character()
+    if (nrow(vfd_results)) "quasi_poisson_vfd" else character()
   )
-  status_value <- if (length(completed_models) == 4L) {
+  status_value <- if (length(completed_models) == 3L) {
     "completed"
   } else if (length(completed_models) > 0L) {
     "completed_partial"
@@ -477,7 +472,6 @@ derive_36m_exposures <- function(df) {
 run_specs <- function(df, sensitivity, specs = model_specs, include_sofa = FALSE,
                       mortality_outcome = "mortality_day28_event",
                       vfd_outcome = "ventilator_free_days",
-                      imv_duration_outcome = "imv_days_through_vfd",
                       cox_time = "mortality_ftime_days",
                       cox_event = "mortality_event") {
   out <- purrr::pmap(specs, function(pollutant_model, exposure_terms) {
@@ -489,7 +483,6 @@ run_specs <- function(df, sensitivity, specs = model_specs, include_sofa = FALSE
       include_sofa = include_sofa,
       mortality_outcome = mortality_outcome,
       vfd_outcome = vfd_outcome,
-      imv_duration_outcome = imv_duration_outcome,
       cox_time = cox_time,
       cox_event = cox_event
     )
@@ -523,7 +516,6 @@ runs <- list(
     "followup_window_14d",
     mortality_outcome = "mortality_day14_event",
     vfd_outcome = "ventilator_free_days_day14",
-    imv_duration_outcome = "imv_days_through_day14",
     cox_time = "mortality_ftime_days_14",
     cox_event = "mortality_event_14"
   )
@@ -573,9 +565,7 @@ cohort_summaries <- bind_rows(
       n_with_pm25_36m = sum(!is.na(pm25_36m_per_5)),
       n_with_no2_36m = sum(!is.na(no2_36m_per_10)),
       n_with_exact_vfd14 = sum(!is.na(ventilator_free_days_day14)),
-      mean_vfd = mean(ventilator_free_days, na.rm = TRUE),
-      mean_imv_days = mean(imv_days_through_vfd, na.rm = TRUE),
-      mean_imv_days_day14 = mean(imv_days_through_day14, na.rm = TRUE)
+      mean_vfd = mean(ventilator_free_days, na.rm = TRUE)
     ),
   if (nrow(no_icu_df)) {
     no_icu_df %>%
@@ -591,9 +581,7 @@ cohort_summaries <- bind_rows(
         n_with_pm25_36m = sum(!is.na(pm25_36m_per_5)),
         n_with_no2_36m = sum(!is.na(no2_36m_per_10)),
         n_with_exact_vfd14 = sum(!is.na(ventilator_free_days_day14)),
-        mean_vfd = mean(ventilator_free_days, na.rm = TRUE),
-        mean_imv_days = mean(imv_days_through_vfd, na.rm = TRUE),
-        mean_imv_days_day14 = mean(imv_days_through_day14, na.rm = TRUE)
+        mean_vfd = mean(ventilator_free_days, na.rm = TRUE)
       )
   } else {
     tibble()
@@ -611,9 +599,7 @@ cohort_summaries <- bind_rows(
       n_with_pm25_36m = sum(!is.na(pm25_36m_per_5)),
       n_with_no2_36m = sum(!is.na(no2_36m_per_10)),
       n_with_exact_vfd14 = sum(!is.na(ventilator_free_days_day14)),
-      mean_vfd = mean(ventilator_free_days, na.rm = TRUE),
-      mean_imv_days = mean(imv_days_through_vfd, na.rm = TRUE),
-      mean_imv_days_day14 = mean(imv_days_through_day14, na.rm = TRUE)
+      mean_vfd = mean(ventilator_free_days, na.rm = TRUE)
     )
 )
 

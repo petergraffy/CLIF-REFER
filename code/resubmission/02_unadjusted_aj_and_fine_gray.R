@@ -320,6 +320,11 @@ risk_event_table <- bind_rows(
     outcome = factor(outcome, levels = c("Extubation", "Death", "Persistent RF"))
   )
 
+readr::write_csv(
+  risk_event_table,
+  file.path(out_dir, "unadjusted_aalen_johansen_events_at_risk_by_tick.csv")
+)
+
 panel_scales <- aj_plot_data %>%
   group_by(pollutant, outcome) %>%
   summarise(y_max = max(cif, na.rm = TRUE), .groups = "drop") %>%

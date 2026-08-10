@@ -74,7 +74,6 @@ analysis_df <- readr::read_csv(input_path, show_col_types = FALSE, progress = FA
       }
     ),
     ventilator_free_days = as.numeric(ventilator_free_days),
-    imv_days_through_vfd = as.numeric(imv_days_through_vfd),
     age_10 = age_10 %||% (age / 10),
     pm25_per_5 = pm25_per_5 %||% (pm25_12m_zcta / 5),
     no2_per_10 = no2_per_10 %||% (no2_12m_zcta / 10),
@@ -92,8 +91,7 @@ analysis_df <- readr::read_csv(input_path, show_col_types = FALSE, progress = FA
     is.finite(mortality_ftime_days),
     mortality_ftime_days > 0,
     !is.na(mortality_event),
-    !is.na(ventilator_free_days),
-    !is.na(imv_days_through_vfd)
+    !is.na(ventilator_free_days)
   )
 
 site_name <- dplyr::first(stats::na.omit(analysis_df$site)) %||% "site"
@@ -126,13 +124,12 @@ pollutant_specs <- tibble::tribble(
 outcome_specs <- tibble::tribble(
   ~outcome, ~endpoint, ~y_label,
   glue("Mortality by day {mortality_prediction_day}"), "mortality", glue("Predicted mortality probability by day {mortality_prediction_day}"),
-  "Ventilator-free days", "vfd", "Predicted ventilator-free days",
-  "IMV duration", "imv_duration", "Predicted IMV duration"
+  "Ventilator-free days", "vfd", "Predicted ventilator-free days"
 )
 
 outcome_colors <- setNames(
-  c("#2166AC", "#B2182B", "#009E73"),
-  c(glue("Predicted mortality probability by day {mortality_prediction_day}"), "Predicted ventilator-free days", "Predicted IMV duration")
+  c("#2166AC", "#B2182B"),
+  c(glue("Predicted mortality probability by day {mortality_prediction_day}"), "Predicted ventilator-free days")
 )
 
 pollutant_x_labels <- list(
@@ -150,8 +147,8 @@ drop_uninformative_covars <- function(model_df, covars, exposure_terms) {
 }
 
 make_prediction_grid <- function(data, term, raw_col, other_term, by_subtype) {
-  exposure_q <- quantile(data[[raw_col]], probs = c(0.05, 0.5, 0.95), na.rm = TRUE, names = FALSE)
-  exposure_grid <- seq(exposure_q[[1]], exposure_q[[3]], length.out = 160)
+  exposure_q <- quantile(data[[raw_col]], probs = c(0, 0.5, 1), na.rm = TRUE, names = FALSE)
+  exposure_grid <- seq(exposure_q[[1]], exposure_q[[3]], length.out = 200)
 
   if (by_subtype) {
     grid <- tidyr::expand_grid(
@@ -220,7 +217,7 @@ fit_curve <- function(outcome, endpoint, pollutant, term, raw_col, other_term, d
   if (by_subtype) covars <- c(covars, "arf_subtype")
 
   model_df <- analysis_df %>%
-    dplyr::select(mortality_day28_event, ventilator_free_days, imv_days_through_vfd, all_of(covars)) %>%
+    dplyr::select(mortality_day28_event, ventilator_free_days, all_of(covars)) %>%
     tidyr::drop_na() %>%
     mutate(
       sex = droplevels(sex),
@@ -237,7 +234,6 @@ fit_curve <- function(outcome, endpoint, pollutant, term, raw_col, other_term, d
 
   response_col <- case_when(
     endpoint == "mortality" ~ "mortality_day28_event",
-    endpoint == "imv_duration" ~ "imv_days_through_vfd",
     TRUE ~ "ventilator_free_days"
   )
   fml <- as.formula(paste0(response_col, " ~ ", rhs))
@@ -382,8 +378,8 @@ make_separate_rug_panel <- function(rugs, group_col, palette_values, pollutant_v
 apply_outcome_y_windows <- function(df) {
   df %>%
     mutate(
-      y_window_low = case_when(endpoint == "mortality" ~ 0, endpoint == "imv_duration" ~ 0, TRUE ~ 15),
-      y_window_high = case_when(endpoint == "mortality" ~ 0.40, endpoint == "imv_duration" ~ 13, TRUE ~ 28),
+      y_window_low = case_when(endpoint == "mortality" ~ 0, TRUE ~ 15),
+      y_window_high = case_when(endpoint == "mortality" ~ 0.40, TRUE ~ 28),
       estimate_plot = pmin(pmax(estimate, y_window_low), y_window_high),
       conf_low_plot = pmin(pmax(conf_low, y_window_low), y_window_high),
       conf_high_plot = pmin(pmax(conf_high, y_window_low), y_window_high)
@@ -395,8 +391,8 @@ make_y_window_df <- function(plot_df) {
     distinct(y_label, endpoint) %>%
     mutate(
       exposure_raw = min(plot_df$exposure_raw, na.rm = TRUE),
-      y_window_low = case_when(endpoint == "mortality" ~ 0, endpoint == "imv_duration" ~ 0, TRUE ~ 15),
-      y_window_high = case_when(endpoint == "mortality" ~ 0.40, endpoint == "imv_duration" ~ 13, TRUE ~ 28)
+      y_window_low = case_when(endpoint == "mortality" ~ 0, TRUE ~ 15),
+      y_window_high = case_when(endpoint == "mortality" ~ 0.40, TRUE ~ 28)
     ) %>%
     pivot_longer(c(y_window_low, y_window_high), names_to = "window_bound", values_to = "y_value")
 }
@@ -520,8 +516,8 @@ plot_subtype_mortality_only <- function() {
 p_subtype_mortality <- plot_subtype_mortality_only()
 
 make_group_prediction_grid <- function(data, term, raw_col, other_term, group_var) {
-  exposure_q <- quantile(data[[raw_col]], probs = c(0.05, 0.5, 0.95), na.rm = TRUE, names = FALSE)
-  exposure_grid <- seq(exposure_q[[1]], exposure_q[[3]], length.out = 160)
+  exposure_q <- quantile(data[[raw_col]], probs = c(0, 0.5, 1), na.rm = TRUE, names = FALSE)
+  exposure_grid <- seq(exposure_q[[1]], exposure_q[[3]], length.out = 200)
   group_levels <- levels(droplevels(data[[group_var]]))
 
   grid <- tidyr::expand_grid(
@@ -603,7 +599,7 @@ fit_mortality_group_curve <- function(group_var, group_label, pollutant, term, r
 fit_continuous_group_curve <- function(group_var, group_label, pollutant, term, raw_col, other_term, display_label,
                                        outcome, endpoint) {
   covars <- c(term, other_term, base_covars, raw_col, group_var)
-  response_col <- if_else(endpoint == "imv_duration", "imv_days_through_vfd", "ventilator_free_days")
+  response_col <- "ventilator_free_days"
 
   model_df <- analysis_df %>%
     dplyr::select(all_of(response_col), all_of(covars)) %>%

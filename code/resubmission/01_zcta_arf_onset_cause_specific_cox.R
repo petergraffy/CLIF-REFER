@@ -208,6 +208,25 @@ first_existing <- function(df, candidates, default = NA) {
   if (length(hit)) df[[hit[[1]]]] else rep(default, nrow(df))
 }
 
+dedupe_by_key <- function(df, key, label) {
+  if (!key %in% names(df) || !nrow(df)) return(df)
+  n_dup_rows <- sum(duplicated(df[[key]]) & !is.na(df[[key]]))
+  n_dup_keys <- df %>%
+    filter(!is.na(.data[[key]])) %>%
+    count(.data[[key]], name = "n") %>%
+    filter(n > 1) %>%
+    nrow()
+  if (n_dup_keys > 0) {
+    warning(glue(
+      "{label}: detected {n_dup_rows} duplicate rows across {n_dup_keys} duplicated {key} values; ",
+      "retaining the first sorted row per key."
+    ))
+  }
+  df %>%
+    filter(!is.na(.data[[key]])) %>%
+    distinct(across(all_of(key)), .keep_all = TRUE)
+}
+
 icd_clean <- function(x) str_replace_all(str_to_upper(as.character(x)), "[^A-Z0-9]", "")
 
 charlson_from_codes <- function(dx) {
@@ -312,7 +331,9 @@ patient <- read_tbl("patient") %>%
       first_existing(pick(everything()), c("ethnicity_category", "ethnicity"))
     ),
     death_dttm = safe_ts(first_existing(pick(everything()), c("death_dttm"), default = NA))
-  )
+  ) %>%
+  arrange(patient_id, desc(!is.na(death_dttm)), death_dttm) %>%
+  dedupe_by_key("patient_id", "patient")
 
 hospitalization <- read_tbl("hospitalization") %>%
   transmute(
@@ -324,6 +345,8 @@ hospitalization <- read_tbl("hospitalization") %>%
     age_at_admission = suppressWarnings(as.numeric(first_existing(pick(everything()), c("age_at_admission"), default = NA))),
     zipcode_five_digit = normalize_zip(first_existing(pick(everything()), c("zipcode_five_digit", "zip_code", "zipcode", "postal_code"), default = NA))
   ) %>%
+  arrange(hospitalization_id, admission_dttm, discharge_dttm) %>%
+  dedupe_by_key("hospitalization_id", "hospitalization") %>%
   left_join(patient, by = "patient_id") %>%
   mutate(
     age = coalesce(
@@ -366,9 +389,11 @@ base <- hospitalization %>%
   mutate(
     arf_window_start = first_icu_in - hours(24),
     arf_window_end = first_icu_in + hours(24)
-  )
+  ) %>%
+  arrange(hospitalization_id, first_icu_in) %>%
+  dedupe_by_key("hospitalization_id", "base ICU cohort")
 
-base_ids <- base$hospitalization_id
+base_ids <- unique(base$hospitalization_id)
 
 resp_support <- read_tbl("respiratory_support") %>%
   filter(hospitalization_id %in% base_ids) %>%
@@ -552,7 +577,9 @@ arf_onset <- arf_hits %>%
 
 cohort <- base %>%
   inner_join(arf_onset, by = "hospitalization_id") %>%
-  filter(!is.na(zipcode_five_digit))
+  filter(!is.na(zipcode_five_digit)) %>%
+  arrange(hospitalization_id, arf_onset) %>%
+  dedupe_by_key("hospitalization_id", "ARF cohort")
 
 message("Computing Charlson score...")
 diagnosis <- read_tbl("hospital_diagnosis") %>%
@@ -590,7 +617,9 @@ cohort <- cohort %>%
   mutate(
     across(myocardial_infarction:aids_hiv, ~ coalesce(.x, FALSE)),
     charlson_score = coalesce(charlson_score, 0)
-  )
+  ) %>%
+  arrange(hospitalization_id, arf_onset) %>%
+  dedupe_by_key("hospitalization_id", "ARF cohort after Charlson")
 
 message("Linking ZCTA pollution exposures...")
 default_zcta_dir <- file.path(repo, "exposome", "zcta")
@@ -938,7 +967,9 @@ death_times <- cohort %>%
       TRUE ~ as.POSIXct(NA, tz = time_zone)
     )
   ) %>%
-  select(hospitalization_id, death_time)
+  select(hospitalization_id, death_time) %>%
+  arrange(hospitalization_id, death_time) %>%
+  dedupe_by_key("hospitalization_id", "death times")
 
 primary_mortality_outcomes <- cohort %>%
   select(hospitalization_id, arf_onset, last_icu_out, discharge_dttm) %>%
@@ -953,7 +984,9 @@ primary_mortality_outcomes <- cohort %>%
     mortality_ftime_days = as.numeric(difftime(mortality_end_time, arf_onset, units = "days")),
     mortality_ftime_days = pmax(mortality_ftime_days, 1 / 24)
   ) %>%
-  select(hospitalization_id, mortality_event, mortality_end_time, mortality_ftime_days)
+  select(hospitalization_id, mortality_event, mortality_end_time, mortality_ftime_days) %>%
+  arrange(hospitalization_id, mortality_end_time) %>%
+  dedupe_by_key("hospitalization_id", "primary mortality outcomes")
 
 summarise_imv_days <- function(horizon_days, output_col) {
   imv_runs %>%
@@ -1010,7 +1043,9 @@ vfd_outcomes <- cohort %>%
     died_before_vfd_day14,
     ventilator_free_days,
     ventilator_free_days_day14
-  )
+  ) %>%
+  arrange(hospitalization_id) %>%
+  dedupe_by_key("hospitalization_id", "ventilator-free-day outcomes")
 
 event_data <- cohort %>%
   select(hospitalization_id, arf_onset, last_icu_out, discharge_dttm, discharge_category) %>%
@@ -1072,7 +1107,9 @@ events <- event_data %>%
       TRUE ~ 0L
     )
   ) %>%
-  mutate(ftime_days = pmax(ftime_days, 1 / 24))
+  mutate(ftime_days = pmax(ftime_days, 1 / 24)) %>%
+  arrange(hospitalization_id, event_code, ftime_days) %>%
+  dedupe_by_key("hospitalization_id", "competing-risk events")
 
 analysis_df_all_icu_los <- cohort %>%
   left_join(primary_mortality_outcomes, by = "hospitalization_id") %>%

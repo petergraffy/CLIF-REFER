@@ -435,7 +435,16 @@ readr::write_csv(primary_curve_sites, file.path(out_dir, "site_primary_exposure_
 readr::write_csv(primary_curve_pooled, file.path(out_dir, "pooled_primary_exposure_response_predictions.csv"))
 
 build_primary_exposure_rug <- function() {
-  site_dirs %>%
+  empty_rug <- tibble(
+    site = character(),
+    arf_subtype = character(),
+    pollutant = factor(character(), levels = c("NO2", "PM2.5")),
+    pollutant_label = factor(character(), levels = pollutant_label_levels_primary),
+    exposure_raw = numeric(),
+    endpoint = character()
+  )
+
+  rug_data <- site_dirs %>%
     mutate(data = map2(site_dir, site, function(site_dir, site_expected) {
       path <- file.path(site_dir, "resubmission_analysis_dataset.csv")
       if (!file.exists(path)) return(tibble())
@@ -447,8 +456,14 @@ build_primary_exposure_rug <- function() {
       ) %>%
         mutate(site = if ("site" %in% names(.)) coalesce(as.character(site), site_expected) else site_expected)
     })) %>%
-    select(site_expected = site, site_dir, data) %>%
-    tidyr::unnest(data) %>%
+    pull(data) %>%
+    bind_rows()
+
+  if (!nrow(rug_data) || !all(c("site", "arf_subtype", "no2_12m_zcta", "pm25_12m_zcta") %in% names(rug_data))) {
+    return(empty_rug)
+  }
+
+  rug_data %>%
     transmute(
       site,
       arf_subtype = as.character(arf_subtype),
@@ -749,8 +764,17 @@ primary_rug_by_subtype <- primary_rug %>%
   filter(!is.na(arf_subtype)) %>%
   mutate(group_level = factor(as.character(arf_subtype), levels = names(subtype_colours)))
 
-primary_rug_by_sex <- site_dirs %>%
-  mutate(data = map2(site_dir, site, function(site_dir, site_expected) {
+build_primary_exposure_rug_by_sex_race <- function() {
+  empty_rug <- tibble(
+    site = character(),
+    sex = character(),
+    race_ethnicity = character(),
+    pollutant = factor(character(), levels = c("NO2", "PM2.5")),
+    exposure_raw = numeric()
+  )
+
+  rug_data <- site_dirs %>%
+    mutate(data = map2(site_dir, site, function(site_dir, site_expected) {
     path <- file.path(site_dir, "resubmission_analysis_dataset.csv")
     if (!file.exists(path)) return(tibble())
     readr::read_csv(
@@ -760,25 +784,34 @@ primary_rug_by_sex <- site_dirs %>%
       col_select = any_of(c("site", "sex", "race_ethnicity", "no2_12m_zcta", "pm25_12m_zcta"))
     ) %>%
       mutate(site = if ("site" %in% names(.)) coalesce(as.character(site), site_expected) else site_expected)
-  })) %>%
-  select(site_expected = site, site_dir, data) %>%
-  tidyr::unnest(data) %>%
-  mutate(
-    race_ethnicity = forcats::fct_collapse(
-      factor(race_ethnicity),
-      "Other/Unknown" = c("Hispanic Other/Unknown", "Other/Unknown")
-    )
-  ) %>%
-  transmute(
-    site,
-    sex = as.character(sex),
-    race_ethnicity = as.character(race_ethnicity),
-    NO2 = as.numeric(no2_12m_zcta),
-    PM2.5 = as.numeric(pm25_12m_zcta)
-  ) %>%
-  pivot_longer(c(NO2, PM2.5), names_to = "pollutant", values_to = "exposure_raw") %>%
-  filter(is.finite(exposure_raw)) %>%
-  mutate(pollutant = factor(pollutant, levels = c("NO2", "PM2.5")))
+    })) %>%
+    pull(data) %>%
+    bind_rows()
+
+  if (!nrow(rug_data) || !all(c("site", "sex", "race_ethnicity", "no2_12m_zcta", "pm25_12m_zcta") %in% names(rug_data))) {
+    return(empty_rug)
+  }
+
+  rug_data %>%
+    mutate(
+      race_ethnicity = forcats::fct_collapse(
+        factor(race_ethnicity),
+        "Other/Unknown" = c("Hispanic Other/Unknown", "Other/Unknown")
+      )
+    ) %>%
+    transmute(
+      site,
+      sex = as.character(sex),
+      race_ethnicity = as.character(race_ethnicity),
+      NO2 = as.numeric(no2_12m_zcta),
+      PM2.5 = as.numeric(pm25_12m_zcta)
+    ) %>%
+    pivot_longer(c(NO2, PM2.5), names_to = "pollutant", values_to = "exposure_raw") %>%
+    filter(is.finite(exposure_raw)) %>%
+    mutate(pollutant = factor(pollutant, levels = c("NO2", "PM2.5")))
+}
+
+primary_rug_by_sex <- build_primary_exposure_rug_by_sex_race()
 
 p_curve_whole <- primary_curve_pooled %>%
   filter(prediction_family == "Whole cohort and ARF subtype", curve_type == "Whole cohort") %>%

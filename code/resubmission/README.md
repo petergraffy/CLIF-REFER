@@ -152,6 +152,7 @@ This sensitivity exports site-level, poolable result tables only; no patient-lev
 - `primary_imv_duration_model_diagnostics.csv`
 - `primary_imv_duration_poisson_vs_quasipoisson_diagnostics.csv`
 - `primary_imv_duration_calibration_by_fitted_decile.csv`
+- `primary_exposure_distribution_bins.csv`
 - `sensitivity_exclude_peak_covid_12m_cohort_summary.csv`
 - `sensitivity_exclude_peak_covid_12m_mortality_day28_logistic_results.csv`
 - `sensitivity_exclude_peak_covid_12m_mortality_cox_results.csv`
@@ -173,6 +174,11 @@ but it does not export them to the site output folder by default. Files such as
 `resubmission_analysis_dataset_no_icu_los_restriction.csv`, and
 `readmission_analysis_dataset.csv` should be treated as PHI-bearing working
 files and should not be uploaded for pooling.
+
+`primary_exposure_distribution_bins.csv` is an aggregate, non-row-level export
+used to draw pooled rug-style exposure distributions. By default, it uses
+0.025 ppb NO2 bins and 0.01 ug/m3 PM2.5 bins; sites can override these with
+`REFER_RUG_BIN_WIDTH_NO2` and `REFER_RUG_BIN_WIDTH_PM25`.
 
 The VFD and supplemental IMV-duration diagnostic files are generated
 automatically at each site when the primary script runs. They provide the

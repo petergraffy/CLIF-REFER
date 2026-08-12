@@ -437,12 +437,40 @@ readr::write_csv(primary_curve_pooled, file.path(out_dir, "pooled_primary_exposu
 build_primary_exposure_rug <- function() {
   empty_rug <- tibble(
     site = character(),
+    group_var = character(),
+    group_level = character(),
     arf_subtype = character(),
     pollutant = factor(character(), levels = c("NO2", "PM2.5")),
     pollutant_label = factor(character(), levels = pollutant_label_levels_primary),
     exposure_raw = numeric(),
+    n = numeric(),
     endpoint = character()
   )
+
+  binned <- read_sites("primary_exposure_distribution_bins.csv")
+  if (nrow(binned) && all(c("group_var", "group_level", "pollutant", "bin_mid", "n") %in% names(binned))) {
+    return(
+      binned %>%
+        transmute(
+          site = as.character(site),
+          group_var = as.character(group_var),
+          group_level = as.character(group_level),
+          arf_subtype = if_else(group_var == "arf_subtype", group_level, NA_character_),
+          pollutant = factor(clean_pollutant(pollutant), levels = c("NO2", "PM2.5")),
+          pollutant_label = factor(
+            case_when(
+              clean_pollutant(pollutant) == "NO2" ~ pollutant_label_levels_primary[[1]],
+              clean_pollutant(pollutant) == "PM2.5" ~ pollutant_label_levels_primary[[2]]
+            ),
+            levels = pollutant_label_levels_primary
+          ),
+          exposure_raw = as.numeric(bin_mid),
+          n = as.numeric(n)
+        ) %>%
+        filter(is.finite(exposure_raw), is.finite(n), n > 0) %>%
+        tidyr::crossing(endpoint = c("mortality", "vfd"))
+    )
+  }
 
   rug_data <- site_dirs %>%
     mutate(data = map2(site_dir, site, function(site_dir, site_expected) {
@@ -466,6 +494,8 @@ build_primary_exposure_rug <- function() {
   rug_data %>%
     transmute(
       site,
+      group_var = "arf_subtype",
+      group_level = as.character(arf_subtype),
       arf_subtype = as.character(arf_subtype),
       NO2 = as.numeric(no2_12m_zcta),
       PM2.5 = as.numeric(pm25_12m_zcta)
@@ -480,7 +510,8 @@ build_primary_exposure_rug <- function() {
           as.character(pollutant) == "PM2.5" ~ pollutant_label_levels_primary[[2]]
         ),
         levels = pollutant_label_levels_primary
-      )
+      ),
+      n = 1
     ) %>%
     tidyr::crossing(endpoint = c("mortality", "vfd"))
 }
@@ -710,10 +741,14 @@ make_separate_rug_panel <- function(rugs, group_col, palette_values, pollutant_v
   rugs <- rugs %>%
     mutate(rug_level = factor(as.character(!!group_col), levels = names(palette_values))) %>%
     filter(!is.na(rug_level))
+  if (!"n" %in% names(rugs)) {
+    rugs <- rugs %>% mutate(n = 1)
+  }
 
-  ggplot(rugs, aes(x = exposure_raw, y = rug_level, color = rug_level)) +
-    geom_point(shape = "|", size = 1.8, alpha = 0.32, show.legend = FALSE) +
+  ggplot(rugs, aes(x = exposure_raw, y = rug_level, color = rug_level, alpha = n)) +
+    geom_point(shape = "|", size = 1.8, show.legend = FALSE) +
     scale_color_manual(values = palette_values, drop = TRUE) +
+    scale_alpha_continuous(range = c(0.12, 0.55), guide = "none") +
     scale_y_discrete(drop = FALSE) +
     labs(x = pollutant_x_labels[[as.character(pollutant_value)]], y = NULL) +
     theme_classic(base_size = 11) +
@@ -761,6 +796,7 @@ make_combined_curve_plot <- function(df, rugs, palette_values, filename_stub, pl
 }
 
 primary_rug_by_subtype <- primary_rug %>%
+  filter(group_var == "arf_subtype") %>%
   filter(!is.na(arf_subtype)) %>%
   mutate(group_level = factor(as.character(arf_subtype), levels = names(subtype_colours)))
 
@@ -770,8 +806,23 @@ build_primary_exposure_rug_by_sex_race <- function() {
     sex = character(),
     race_ethnicity = character(),
     pollutant = factor(character(), levels = c("NO2", "PM2.5")),
-    exposure_raw = numeric()
+    exposure_raw = numeric(),
+    n = numeric()
   )
+
+  binned <- primary_rug %>%
+    filter(group_var %in% c("sex", "race_ethnicity")) %>%
+    transmute(
+      site,
+      sex = if_else(group_var == "sex", group_level, NA_character_),
+      race_ethnicity = if_else(group_var == "race_ethnicity", group_level, NA_character_),
+      pollutant,
+      exposure_raw,
+      n
+    )
+  if (nrow(binned)) {
+    return(binned)
+  }
 
   rug_data <- site_dirs %>%
     mutate(data = map2(site_dir, site, function(site_dir, site_expected) {
@@ -808,7 +859,10 @@ build_primary_exposure_rug_by_sex_race <- function() {
     ) %>%
     pivot_longer(c(NO2, PM2.5), names_to = "pollutant", values_to = "exposure_raw") %>%
     filter(is.finite(exposure_raw)) %>%
-    mutate(pollutant = factor(pollutant, levels = c("NO2", "PM2.5")))
+    mutate(
+      pollutant = factor(pollutant, levels = c("NO2", "PM2.5")),
+      n = 1
+    )
 }
 
 primary_rug_by_sex <- build_primary_exposure_rug_by_sex_race()
@@ -819,6 +873,7 @@ p_curve_whole <- primary_curve_pooled %>%
   mutate(group_level = factor(as.character(outcome), levels = names(curve_colours)))
 
 primary_rug_whole <- primary_rug %>%
+  filter(group_var == "overall") %>%
   mutate(group_level = factor("Mortality by day 28", levels = names(curve_colours)))
 
 p_curve_whole <- make_combined_curve_plot(

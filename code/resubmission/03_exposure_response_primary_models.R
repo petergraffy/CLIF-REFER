@@ -120,6 +120,10 @@ pollutant_specs <- tibble::tribble(
   "NO2", "no2_per_10", "no2_12m_zcta", "pm25_per_5", "Nitrogen~dioxide~(NO[2])", expression(NO[2]~"(ppb)"),
   "PM2.5", "pm25_per_5", "pm25_12m_zcta", "no2_per_10", "Fine~particulate~matter~(PM[2.5])", expression(PM[2.5]~"("*mu*"g/m"^3*")")
 )
+pollutant_bin_widths <- c(
+  "NO2" = as.numeric(Sys.getenv("REFER_RUG_BIN_WIDTH_NO2", "0.025")),
+  "PM2.5" = as.numeric(Sys.getenv("REFER_RUG_BIN_WIDTH_PM25", "0.01"))
+)
 
 outcome_specs <- tibble::tribble(
   ~outcome, ~endpoint, ~y_label,
@@ -299,6 +303,48 @@ prediction_df <- tidyr::crossing(outcome_specs, pollutant_specs) %>%
   )
 
 readr::write_csv(prediction_df, file.path(out_dir, "primary_exposure_response_predictions.csv"))
+
+make_exposure_distribution_bins <- function(df, group_var, group_label) {
+  group_level <- if (identical(group_var, "overall")) {
+    rep("Overall", nrow(df))
+  } else {
+    as.character(df[[group_var]])
+  }
+
+  bind_rows(lapply(seq_len(nrow(pollutant_specs)), function(i) {
+    spec <- pollutant_specs[i, ]
+    width <- pollutant_bin_widths[[spec$pollutant]]
+    if (!is.finite(width) || width <= 0) {
+      stop("Invalid exposure rug bin width for ", spec$pollutant)
+    }
+
+    df %>%
+      transmute(
+        site = site_name,
+        group_var = group_var,
+        group_level = group_level,
+        pollutant = spec$pollutant,
+        pollutant_label = spec$display_label,
+        bin_width = width,
+        exposure_raw = as.numeric(.data[[spec$raw_col]])
+      ) %>%
+      filter(!is.na(group_level), is.finite(exposure_raw)) %>%
+      mutate(
+        bin_lower = floor(exposure_raw / bin_width) * bin_width,
+        bin_upper = bin_lower + bin_width,
+        bin_mid = bin_lower + bin_width / 2
+      ) %>%
+      count(site, group_var, group_level, pollutant, pollutant_label, bin_width, bin_lower, bin_upper, bin_mid, name = "n")
+  }))
+}
+
+exposure_distribution_bins <- bind_rows(
+  make_exposure_distribution_bins(analysis_df, "overall", "Overall"),
+  make_exposure_distribution_bins(analysis_df, "arf_subtype", "ARF subtype"),
+  make_exposure_distribution_bins(analysis_df, "sex", "Sex"),
+  make_exposure_distribution_bins(analysis_df, "race_ethnicity", "Race/ethnicity")
+)
+readr::write_csv(exposure_distribution_bins, file.path(out_dir, "primary_exposure_distribution_bins.csv"))
 
 rug_df <- bind_rows(lapply(seq_len(nrow(pollutant_specs)), function(i) {
   spec <- pollutant_specs[i, ]
@@ -833,6 +879,7 @@ p_race_combined <- plot_group_combined_curves("race_ethnicity", "By race/ethnici
 
 message("Wrote:")
 message(" - ", file.path(out_dir, "primary_exposure_response_predictions.csv"))
+message(" - ", file.path(out_dir, "primary_exposure_distribution_bins.csv"))
 message(" - ", file.path(out_dir, "primary_mortality_exposure_response_by_sex_race_predictions.csv"))
 message(" - ", file.path(out_dir, "primary_exposure_response_by_sex_race_predictions.csv"))
 message(" - ", file.path(fig_dir, "primary_exposure_response_predicted_outcome_whole_cohort.png"))

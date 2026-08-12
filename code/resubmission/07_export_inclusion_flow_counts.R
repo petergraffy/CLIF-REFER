@@ -68,9 +68,12 @@ raw_no_icu_summary <- read_optional_csv("resubmission_cohort_summary_no_icu_los_
 model_cohort_summary <- read_optional_csv("cohort_summary_reviewer_optimized.csv")
 imv_assignment <- read_optional_csv("competing_risk_exhaustive_imv_assignment_diagnostics.csv")
 fine_gray_results <- read_optional_csv("fine_gray_results_same_covariates_as_cox.csv")
+primary_mortality_results <- read_optional_csv("primary_mortality_day28_logistic_results.csv")
+primary_vfd_results <- read_optional_csv("primary_vfd_quasipoisson_results.csv")
 sensitivity_cohorts <- read_optional_csv("primary_sensitivity_models_cohort_summaries.csv")
 
 site_name <- first_present_value(analysis_df, "site") %||%
+  first_present_value(primary_mortality_results, "site") %||%
   first_present_value(model_cohort_summary, "site") %||%
   first_present_value(raw_cohort_summary, "site") %||%
   first_present_value(all_clif_overall, "site") %||%
@@ -96,7 +99,9 @@ adjustment_covars <- if (!is.na(adjustment_covars)) {
 } else {
   default_adjustment_covars
 }
-adjustment_covars <- intersect(adjustment_covars, names(analysis_df))
+if (nrow(analysis_df)) {
+  adjustment_covars <- intersect(adjustment_covars, names(analysis_df))
+}
 
 primary_complete_vars <- c(
   "mortality_day28_event",
@@ -145,17 +150,45 @@ n_patients_arf_primary <- first_present_value(
 n_excluded_icu_los <- if (!is.na(n_arf_no_icu) && !is.na(n_arf_primary)) n_arf_no_icu - n_arf_primary else NA_integer_
 n_with_pm25 <- first_present_value(raw_cohort_summary, "n_with_pm25", count_complete_rows(analysis_df, "pm25_per_5"))
 n_with_no2 <- first_present_value(raw_cohort_summary, "n_with_no2", count_complete_rows(analysis_df, "no2_per_10"))
-n_with_pm25_no2 <- count_complete_rows(analysis_df, c("pm25_per_5", "no2_per_10"))
-n_with_primary_covars <- count_complete_rows(analysis_df, adjustment_covars)
-n_primary_complete <- sum(primary_complete)
-n_primary_day28_deaths <- if (n_primary_complete && "mortality_day28_event" %in% names(analysis_df)) {
+n_with_pm25_no2 <- first_present_value(
+  model_cohort_summary,
+  "n_with_pm25_no2",
+  count_complete_rows(analysis_df, c("pm25_per_5", "no2_per_10"))
+)
+n_with_primary_covars <- first_present_value(
+  model_cohort_summary,
+  "n_with_primary_adjustment_covariates",
+  count_complete_rows(analysis_df, adjustment_covars)
+)
+n_primary_complete <- if (nrow(primary_mortality_results) && "n" %in% names(primary_mortality_results)) {
+  max(primary_mortality_results$n, na.rm = TRUE)
+} else if (!is.na(first_present_value(model_cohort_summary, "n_primary_complete_cases"))) {
+  first_present_value(model_cohort_summary, "n_primary_complete_cases")
+} else {
+  sum(primary_complete)
+}
+n_primary_day28_deaths <- if (nrow(primary_mortality_results) && "events" %in% names(primary_mortality_results)) {
+  max(primary_mortality_results$events, na.rm = TRUE)
+} else if (n_primary_complete && "mortality_day28_event" %in% names(analysis_df)) {
   sum(analysis_df$mortality_day28_event[primary_complete] %in% TRUE, na.rm = TRUE)
 } else {
   NA_integer_
 }
-n_vfd_complete <- count_complete_rows(analysis_df, c("ventilator_free_days", "imv_days_through_vfd", "pm25_per_5", "no2_per_10", adjustment_covars))
+n_vfd_complete <- if (nrow(primary_vfd_results) && "n" %in% names(primary_vfd_results)) {
+  max(primary_vfd_results$n, na.rm = TRUE)
+} else {
+  count_complete_rows(analysis_df, c("ventilator_free_days", "imv_days_through_vfd", "pm25_per_5", "no2_per_10", adjustment_covars))
+}
 n_imv_after_arf <- first_present_value(raw_cohort_summary, "n_with_imv_after_arf", first_present_value(imv_assignment, "n_with_imv_after_arf"))
-n_competing_complete <- sum(competing_complete)
+n_competing_complete <- if (nrow(fine_gray_results) && "n" %in% names(fine_gray_results)) {
+  max(fine_gray_results$n, na.rm = TRUE)
+} else if (!is.na(first_present_value(model_cohort_summary, "n_imv_competing_risk_complete_cases"))) {
+  first_present_value(model_cohort_summary, "n_imv_competing_risk_complete_cases")
+} else {
+  sum(competing_complete)
+}
+n_primary_complete_patients <- first_present_value(model_cohort_summary, "n_primary_complete_case_patients")
+n_competing_complete_patients <- first_present_value(model_cohort_summary, "n_imv_competing_risk_complete_case_patients")
 n_fg_events <- if (nrow(fine_gray_results)) {
   fine_gray_results %>%
     group_by(outcome) %>%
@@ -224,8 +257,8 @@ flow_long <- bind_rows(
     n_with_pm25_no2,
     NA_integer_,
     if (!is.na(n_arf_primary) && !is.na(n_with_pm25_no2)) n_arf_primary - n_with_pm25_no2 else NA_integer_,
-    source_file = "analysis_dataset_reviewer_optimized.csv",
-    notes = "Exposure-complete denominator for single- and dual-pollutant primary models."
+    source_file = "cohort_summary_reviewer_optimized.csv",
+    notes = "Exposure-complete denominator exported as an aggregate count; no row-level dataset required."
   ),
   add_flow_row(
     8,
@@ -233,16 +266,22 @@ flow_long <- bind_rows(
     n_with_primary_covars,
     NA_integer_,
     if (!is.na(n_arf_primary) && !is.na(n_with_primary_covars)) n_arf_primary - n_with_primary_covars else NA_integer_,
-    source_file = "analysis_dataset_reviewer_optimized.csv",
+    source_file = "cohort_summary_reviewer_optimized.csv",
     notes = paste(adjustment_covars, collapse = " + ")
   ),
   add_flow_row(
     9,
     "Final primary complete-case mortality and VFD model cohort",
     n_primary_complete,
-    if (nrow(analysis_df) && "patient_id" %in% names(analysis_df)) n_distinct(analysis_df$patient_id[primary_complete]) else NA_integer_,
+    if (!is.na(n_primary_complete_patients)) {
+      n_primary_complete_patients
+    } else if (nrow(analysis_df) && "patient_id" %in% names(analysis_df)) {
+      n_distinct(analysis_df$patient_id[primary_complete])
+    } else {
+      NA_integer_
+    },
     if (!is.na(n_arf_primary) && !is.na(n_primary_complete)) n_arf_primary - n_primary_complete else NA_integer_,
-    source_file = "analysis_dataset_reviewer_optimized.csv",
+    source_file = "primary_mortality_day28_logistic_results.csv; primary_vfd_quasipoisson_results.csv",
     notes = "Complete mortality day 28, VFD, IMV duration, PM2.5, NO2, and primary adjustment covariates."
   ),
   add_flow_row(
@@ -250,7 +289,7 @@ flow_long <- bind_rows(
     "Day-28 deaths in final primary model cohort",
     n_primary_day28_deaths,
     NA_integer_,
-    source_file = "analysis_dataset_reviewer_optimized.csv",
+    source_file = "primary_mortality_day28_logistic_results.csv",
     notes = "Primary mortality outcome count among complete cases."
   ),
   add_flow_row(
@@ -266,9 +305,15 @@ flow_long <- bind_rows(
     12,
     "Final complete-case adjusted Fine-Gray model cohort",
     n_competing_complete,
-    if (nrow(competing_pool) && "patient_id" %in% names(competing_pool)) n_distinct(competing_pool$patient_id[competing_complete]) else NA_integer_,
+    if (!is.na(n_competing_complete_patients)) {
+      n_competing_complete_patients
+    } else if (nrow(competing_pool) && "patient_id" %in% names(competing_pool)) {
+      n_distinct(competing_pool$patient_id[competing_complete])
+    } else {
+      NA_integer_
+    },
     if (!is.na(n_imv_after_arf) && !is.na(n_competing_complete)) n_imv_after_arf - n_competing_complete else NA_integer_,
-    source_file = "analysis_dataset_reviewer_optimized.csv; fine_gray_results_same_covariates_as_cox.csv",
+    source_file = "fine_gray_results_same_covariates_as_cox.csv",
     notes = "Complete IMV competing-risk time/event, PM2.5, NO2, and primary adjustment covariates."
   ),
   add_flow_row(

@@ -1059,6 +1059,25 @@ fit_primary_model_set <- function(df) {
 }
 
 summarise_modeling_cohort <- function(df, sensitivity_label, primary_n = NA_integer_) {
+  both_exposure_complete <- stats::complete.cases(df[, intersect(c("pm25_per_5", "no2_per_10"), names(df)), drop = FALSE])
+  adjustment_complete <- stats::complete.cases(df[, intersect(adjustment_covars, names(df)), drop = FALSE])
+  primary_complete_vars <- c(
+    "mortality_day28_event",
+    "ventilator_free_days",
+    "imv_days_through_vfd",
+    "pm25_per_5",
+    "no2_per_10",
+    adjustment_covars
+  )
+  primary_complete <- stats::complete.cases(df[, intersect(primary_complete_vars, names(df)), drop = FALSE])
+  competing_complete_vars <- c("ftime_days", "event_code", "pm25_per_5", "no2_per_10", adjustment_covars)
+  competing_pool <- df %>% filter(.data$has_imv_after_arf %in% TRUE)
+  competing_complete <- if (nrow(competing_pool)) {
+    stats::complete.cases(competing_pool[, intersect(competing_complete_vars, names(competing_pool)), drop = FALSE])
+  } else {
+    logical()
+  }
+
   tibble(
     site = site_name,
     sensitivity = sensitivity_label,
@@ -1076,6 +1095,16 @@ summarise_modeling_cohort <- function(df, sensitivity_label, primary_n = NA_inte
     vfd_horizon_days = vfd_days,
     mean_charlson = mean(df$charlson_score, na.rm = TRUE),
     median_charlson = median(df$charlson_score, na.rm = TRUE),
+    n_with_pm25_no2 = sum(both_exposure_complete, na.rm = TRUE),
+    n_with_primary_adjustment_covariates = sum(adjustment_complete, na.rm = TRUE),
+    n_primary_complete_cases = sum(primary_complete, na.rm = TRUE),
+    n_primary_complete_case_patients = n_distinct(df$patient_id[primary_complete]),
+    n_imv_competing_risk_complete_cases = sum(competing_complete, na.rm = TRUE),
+    n_imv_competing_risk_complete_case_patients = if (nrow(competing_pool)) {
+      n_distinct(competing_pool$patient_id[competing_complete])
+    } else {
+      0L
+    },
     pm25_exposure_column = first_present(arf_exp, c("pm25_12m_zcta", "pm25_12m_mean", "pm25_mean")),
     no2_exposure_column = first_present(arf_exp, c("no2_12m_zcta", "no2_12m_mean", "no2_mean")),
     adjustment_covariates = paste(adjustment_covars, collapse = " + ")
@@ -1476,7 +1505,18 @@ cohort_summary <- summarise_modeling_cohort(
   dplyr::select(-sensitivity, -n_excluded_vs_primary) %>%
   bind_cols(baseline_burden_wide)
 
-readr::write_csv(analysis_df, file.path(out_dir, "analysis_dataset_reviewer_optimized.csv"))
+internal_analysis_dataset <- Sys.getenv("REFER_INTERNAL_ANALYSIS_DATASET", unset = "")
+export_row_level_datasets <- tolower(Sys.getenv("REFER_EXPORT_ROW_LEVEL_DATASETS", unset = "false")) %in%
+  c("1", "true", "yes", "y")
+
+if (nzchar(internal_analysis_dataset)) {
+  dir.create(dirname(internal_analysis_dataset), recursive = TRUE, showWarnings = FALSE)
+  readr::write_csv(analysis_df, internal_analysis_dataset)
+}
+
+if (export_row_level_datasets) {
+  readr::write_csv(analysis_df, file.path(out_dir, "analysis_dataset_reviewer_optimized.csv"))
+}
 readr::write_csv(cohort_summary, file.path(out_dir, "cohort_summary_reviewer_optimized.csv"))
 readr::write_csv(baseline_burden_prevalence, file.path(out_dir, "table1_baseline_chronic_disease_prevalence.csv"))
 readr::write_csv(table1_continuous_stats, file.path(out_dir, "table1_continuous_site_resubmission.csv"))

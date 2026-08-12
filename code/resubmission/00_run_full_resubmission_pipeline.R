@@ -35,6 +35,8 @@ no_icu_dataset_arg <- arg_or(2)
 resubmission_dir <- file.path(repo, "code", "resubmission")
 out_dir <- arg_or(3, file.path(repo, "output", "resubmission", stamp))
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+private_work_dir <- file.path(tempdir(), paste0("refer_resubmission_private_", stamp))
+dir.create(private_work_dir, recursive = TRUE, showWarnings = FALSE)
 
 rscript <- file.path(R.home("bin"), "Rscript")
 
@@ -70,6 +72,7 @@ find_existing <- function(paths) {
 
 message("Repository: ", repo)
 message("Unified output directory: ", out_dir)
+message("Private row-level working directory: ", private_work_dir)
 
 step_log <- list()
 
@@ -78,10 +81,22 @@ if (is.na(primary_dataset_arg) || !file.exists(primary_dataset_arg)) {
   step_log[[length(step_log) + 1]] <- run_step(
     "Build ARF cohorts from raw CLIF/ZCTA data",
     cohort_builder,
-    env = c(paste0("REFER_RESUBMISSION_OUTPUT_DIR=", normalizePath(out_dir, mustWork = FALSE)))
+    env = c(paste0("REFER_RESUBMISSION_OUTPUT_DIR=", normalizePath(private_work_dir, mustWork = FALSE)))
   )
-  primary_dataset <- file.path(out_dir, "resubmission_analysis_dataset.csv")
-  no_icu_dataset <- file.path(out_dir, "resubmission_analysis_dataset_no_icu_los_restriction.csv")
+  primary_dataset <- file.path(private_work_dir, "resubmission_analysis_dataset.csv")
+  no_icu_dataset <- file.path(private_work_dir, "resubmission_analysis_dataset_no_icu_los_restriction.csv")
+
+  aggregate_builder_outputs <- c(
+    "resubmission_cohort_summary.csv",
+    "resubmission_cohort_summary_no_icu_los_restriction.csv",
+    "resubmission_cohort_summary_no_peak_covid.csv"
+  )
+  for (filename in aggregate_builder_outputs) {
+    src <- file.path(private_work_dir, filename)
+    if (file.exists(src)) {
+      file.copy(src, file.path(out_dir, filename), overwrite = TRUE)
+    }
+  }
 } else {
   primary_dataset <- normalizePath(primary_dataset_arg, mustWork = TRUE)
   no_icu_dataset <- if (!is.na(no_icu_dataset_arg) && file.exists(no_icu_dataset_arg)) {
@@ -100,15 +115,19 @@ if (!file.exists(primary_dataset)) {
 }
 
 primary_script <- file.path(resubmission_dir, "01_primary_reviewer_optimized_models.R")
+reviewer_dataset <- file.path(private_work_dir, "analysis_dataset_reviewer_optimized.csv")
 step_log[[length(step_log) + 1]] <- run_step(
   "Primary day-28 mortality, Cox sensitivity, VFD, Table 1, COVID sensitivity",
   primary_script,
-  c(primary_dataset, out_dir)
+  c(primary_dataset, out_dir),
+  env = c(
+    paste0("REFER_INTERNAL_ANALYSIS_DATASET=", normalizePath(reviewer_dataset, mustWork = FALSE)),
+    "REFER_EXPORT_ROW_LEVEL_DATASETS=false"
+  )
 )
 
-reviewer_dataset <- file.path(out_dir, "analysis_dataset_reviewer_optimized.csv")
 if (!file.exists(reviewer_dataset)) {
-  stop("Reviewer-optimized dataset was not created: ", reviewer_dataset)
+  stop("Internal reviewer-optimized dataset was not created: ", reviewer_dataset)
 }
 
 analysis_steps <- list(
@@ -160,9 +179,16 @@ step_log[[length(step_log) + 1]] <- run_step(
 pipeline_manifest <- tibble(
   repo = repo,
   output_dir = normalizePath(out_dir, mustWork = FALSE),
-  primary_input_dataset = primary_dataset,
-  reviewer_optimized_dataset = reviewer_dataset,
-  no_icu_los_dataset = if (!is.na(no_icu_dataset) && file.exists(no_icu_dataset)) no_icu_dataset else NA_character_,
+  primary_input_dataset = if (!is.na(primary_dataset_arg) && file.exists(primary_dataset_arg)) primary_dataset else "temporary_private_working_file_not_exported",
+  reviewer_optimized_dataset = "temporary_private_working_file_not_exported",
+  no_icu_los_dataset = if (!is.na(primary_dataset_arg) && !is.na(no_icu_dataset) && file.exists(no_icu_dataset)) {
+    no_icu_dataset
+  } else if (!is.na(no_icu_dataset) && file.exists(no_icu_dataset)) {
+    "temporary_private_working_file_not_exported"
+  } else {
+    NA_character_
+  },
+  private_row_level_outputs = "not_exported_to_site_output",
   generated_at = as.character(Sys.time())
 )
 

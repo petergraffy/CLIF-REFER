@@ -36,7 +36,9 @@ aggregate export into one timestamped folder:
 Rscript code/resubmission/00_run_full_resubmission_pipeline.R
 ```
 
-For development or reruns from an existing cohort export:
+For local development only, reruns can start from an existing row-level cohort
+export. These files are PHI-bearing working files and should not be uploaded
+for pooling:
 
 ```sh
 Rscript code/resubmission/00_run_full_resubmission_pipeline.R \
@@ -138,7 +140,6 @@ This sensitivity exports site-level, poolable result tables only; no patient-lev
 
 ## Output Files
 
-- `analysis_dataset_reviewer_optimized.csv`
 - `cohort_summary_reviewer_optimized.csv`
 - `primary_mortality_day28_logistic_results.csv`
 - `primary_mortality_cox_results.csv`
@@ -165,6 +166,13 @@ This sensitivity exports site-level, poolable result tables only; no patient-lev
 - `site_inclusion_flow_counts.csv`
 - `site_inclusion_flow_counts_wide.csv`
 - `site_inclusion_flow_counts_dictionary.csv`
+
+The pipeline uses row-level analysis datasets internally while it is running,
+but it does not export them to the site output folder by default. Files such as
+`analysis_dataset_reviewer_optimized.csv`, `resubmission_analysis_dataset.csv`,
+`resubmission_analysis_dataset_no_icu_los_restriction.csv`, and
+`readmission_analysis_dataset.csv` should be treated as PHI-bearing working
+files and should not be uploaded for pooling.
 
 The VFD and supplemental IMV-duration diagnostic files are generated
 automatically at each site when the primary script runs. They provide the

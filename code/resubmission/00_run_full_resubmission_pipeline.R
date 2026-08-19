@@ -185,11 +185,8 @@ reviewer_dataset <- file.path(private_work_dir, "analysis_dataset_reviewer_optim
 step_log[[length(step_log) + 1]] <- run_step(
   "Primary day-28 mortality, Cox sensitivity, VFD, Table 1, COVID sensitivity",
   primary_script,
-  c(primary_dataset, out_dir),
-  env = c(
-    paste0("REFER_INTERNAL_ANALYSIS_DATASET=", normalizePath(reviewer_dataset, mustWork = FALSE)),
-    "REFER_EXPORT_ROW_LEVEL_DATASETS=false"
-  )
+  c(primary_dataset, out_dir, reviewer_dataset),
+  env = c("REFER_EXPORT_ROW_LEVEL_DATASETS=false")
 )
 
 if (!file.exists(reviewer_dataset)) {

@@ -1505,7 +1505,13 @@ cohort_summary <- summarise_modeling_cohort(
   dplyr::select(-sensitivity, -n_excluded_vs_primary) %>%
   bind_cols(baseline_burden_wide)
 
-internal_analysis_dataset <- Sys.getenv("REFER_INTERNAL_ANALYSIS_DATASET", unset = "")
+internal_analysis_dataset <- arg_or(
+  3,
+  Sys.getenv(
+    "REFER_INTERNAL_ANALYSIS_DATASET",
+    unset = file.path(out_dir, "analysis_dataset_reviewer_optimized.csv")
+  )
+)
 export_row_level_datasets <- tolower(Sys.getenv("REFER_EXPORT_ROW_LEVEL_DATASETS", unset = "false")) %in%
   c("1", "true", "yes", "y")
 
@@ -1514,7 +1520,7 @@ if (nzchar(internal_analysis_dataset)) {
   readr::write_csv(analysis_df, internal_analysis_dataset)
 }
 
-if (export_row_level_datasets) {
+if (export_row_level_datasets && !identical(normalizePath(internal_analysis_dataset, mustWork = FALSE), normalizePath(file.path(out_dir, "analysis_dataset_reviewer_optimized.csv"), mustWork = FALSE))) {
   readr::write_csv(analysis_df, file.path(out_dir, "analysis_dataset_reviewer_optimized.csv"))
 }
 readr::write_csv(cohort_summary, file.path(out_dir, "cohort_summary_reviewer_optimized.csv"))

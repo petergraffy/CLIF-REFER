@@ -149,6 +149,44 @@ The cohort-builder step now receives its working output folder as an explicit
 script argument from the full pipeline runner. This avoids relying on Windows
 environment-variable passing between parent and child R processes.
 
+## Running Scripts One At A Time
+
+If the full runner fails, sites can run each step individually. This is also the
+best fallback when debugging a site-specific CLIF extract. These commands write
+the PHI-bearing intermediate datasets into the selected local output folder, so
+sites should not upload those row-level files for pooling.
+
+From the repository root, choose a run folder:
+
+```powershell
+$run = "output\resubmission\manual_run"
+New-Item -ItemType Directory -Force $run
+```
+
+Then run the scripts in order:
+
+```powershell
+Rscript --vanilla "code\resubmission\00_setup_renv.R"
+Rscript --vanilla "code\resubmission\01_zcta_arf_onset_cause_specific_cox.R" $run
+Rscript --vanilla "code\resubmission\01_primary_reviewer_optimized_models.R" "$run\resubmission_analysis_dataset.csv" $run "$run\analysis_dataset_reviewer_optimized.csv"
+Rscript --vanilla "code\resubmission\02_unadjusted_aj_and_fine_gray.R" "$run\analysis_dataset_reviewer_optimized.csv" $run
+Rscript --vanilla "code\resubmission\03_exposure_response_primary_models.R" "$run\analysis_dataset_reviewer_optimized.csv" $run
+Rscript --vanilla "code\resubmission\04_subgroup_interaction_estimates.R" "$run\analysis_dataset_reviewer_optimized.csv" $run
+Rscript --vanilla "code\resubmission\05_clif_site_mortality_distribution_export.R" "." $run
+Rscript --vanilla "code\resubmission\06_primary_sensitivity_models.R" "$run\analysis_dataset_reviewer_optimized.csv" $run "$run\resubmission_analysis_dataset_no_icu_los_restriction.csv"
+Rscript --vanilla "code\resubmission\07_export_inclusion_flow_counts.R" $run
+```
+
+If `Rscript` is not on the Windows `PATH`, use the full `Rscript.exe` path shown
+above in place of `Rscript` for each command.
+
+The row-level files below are local working files only and should not be shared
+for pooling:
+
+- `resubmission_analysis_dataset.csv`
+- `resubmission_analysis_dataset_no_icu_los_restriction.csv`
+- `analysis_dataset_reviewer_optimized.csv`
+
 For local development only, reruns can start from an existing row-level cohort
 export. These files are PHI-bearing working files and should not be uploaded
 for pooling:

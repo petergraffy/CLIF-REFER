@@ -22,6 +22,19 @@ resubmission pipeline using the current R installation.
 Do not run the file line-by-line. Source the full file so it can set the working
 directory correctly before launching the pipeline.
 
+`00_run_individual_step_from_rstudio.R`
+
+This is the RStudio fallback when a site needs to run one script at a time. Open
+the file in RStudio, set `STEP_TO_RUN` to the desired step, and click
+**Source**. Use `STEP_TO_RUN <- "all_manual"` to run the full manual sequence,
+or one of the individual values listed at the top of the file, such as
+`"01_build_cohort"`, `"01_primary_models"`, or `"02_competing_risks"`.
+
+The script reuses `RUN_DIR`, which defaults to
+`output/resubmission/manual_run`. Keep the same `RUN_DIR` when advancing from
+one step to the next so each script can find the intermediate files from the
+prior step.
+
 `00_setup_renv.R`
 
 Sites should restore the R package environment before running the analysis:
@@ -47,7 +60,9 @@ REFER resubmission run.
 Sites using RStudio can avoid the command line entirely by opening
 `code/resubmission/00_run_from_rstudio.R` and clicking **Source**. The
 command-line instructions below are a fallback for sites that prefer PowerShell
-or need to debug outside RStudio.
+or need to debug outside RStudio. To run a single step from RStudio, open
+`code/resubmission/00_run_individual_step_from_rstudio.R`, edit `STEP_TO_RUN`,
+and click **Source**.
 
 Use PowerShell or Command Prompt from the cloned repository root. Do not run the
 files line-by-line from the R console, and do not double-click the scripts. The
@@ -155,6 +170,16 @@ If the full runner fails, sites can run each step individually. This is also the
 best fallback when debugging a site-specific CLIF extract. These commands write
 the PHI-bearing intermediate datasets into the selected local output folder, so
 sites should not upload those row-level files for pooling.
+
+The easiest non-command-line version is:
+
+1. Open `code/resubmission/00_run_individual_step_from_rstudio.R` in RStudio.
+2. Set `STEP_TO_RUN <- "01_build_cohort"` or whichever step is needed.
+3. Click **Source**.
+4. Keep the same `RUN_DIR` as each downstream step is run.
+
+The equivalent PowerShell commands are listed below for sites that prefer the
+command line or need to paste commands into an IT ticket.
 
 From the repository root, choose a run folder:
 

@@ -60,33 +60,63 @@ run_step <- function(step, script, script_args = character(), env = character())
   message("\n== ", step, " ==")
   message("Running: ", paste(c(rscript, "--vanilla", script, script_args), collapse = " "))
   log_stub <- step_log_name(step)
-  stdout_log <- file.path(log_dir, paste0(log_stub, ".stdout.log"))
-  stderr_log <- file.path(log_dir, paste0(log_stub, ".stderr.log"))
-  message("Stdout log: ", stdout_log)
-  message("Stderr log: ", stderr_log)
+  step_log_file <- file.path(log_dir, paste0(log_stub, ".log"))
+  message("Step log: ", step_log_file)
+  writeLines(
+    c(
+      paste0("Step: ", step),
+      paste0("Started at: ", Sys.time()),
+      paste0("Repository: ", repo),
+      paste0("Working directory: ", getwd()),
+      paste0("Command: ", paste(c(rscript, "--vanilla", script, script_args), collapse = " ")),
+      if (length(env)) paste0("Environment: ", paste(env, collapse = "; ")) else "Environment: none",
+      ""
+    ),
+    step_log_file,
+    useBytes = TRUE
+  )
   start_time <- Sys.time()
-  status <- system2(
-    rscript,
-    args = c("--vanilla", script, script_args),
-    env = env,
-    stdout = stdout_log,
-    stderr = stderr_log
+  captured_warnings <- character()
+  output <- tryCatch(
+    withCallingHandlers(
+      system2(
+        rscript,
+        args = c("--vanilla", script, script_args),
+        env = env,
+        stdout = TRUE,
+        stderr = TRUE
+      ),
+      warning = function(w) {
+        captured_warnings <<- c(captured_warnings, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      }
+    ),
+    error = function(e) {
+      structure(paste0("system2 error: ", conditionMessage(e)), status = 1L)
+    }
   )
   end_time <- Sys.time()
+  status <- attr(output, "status")
+  if (is.null(status)) status <- 0L
+  output <- as.character(output)
+  write(
+    c(
+      if (length(captured_warnings)) c("--- Parent R warnings ---", captured_warnings, "") else character(),
+      if (length(output)) output else "[No child-process output captured]",
+      "",
+      paste0("Ended at: ", end_time),
+      paste0("Exit status: ", status)
+    ),
+    file = step_log_file,
+    append = TRUE
+  )
   if (!identical(status, 0L)) {
-    stdout_tail <- tail_file(stdout_log)
-    stderr_tail <- tail_file(stderr_log)
-    if (length(stdout_tail)) {
-      message("\n--- Last lines from stdout log ---")
-      message(paste(stdout_tail, collapse = "\n"))
-    }
-    if (length(stderr_tail)) {
-      message("\n--- Last lines from stderr log ---")
-      message(paste(stderr_tail, collapse = "\n"))
-    }
+    log_tail <- tail_file(step_log_file)
+    message("\n--- Last lines from step log ---")
+    message(paste(log_tail, collapse = "\n"))
     stop(
       "Step failed: ", step, " (exit status ", status, "). ",
-      "See logs in: ", log_dir
+      "See step log: ", step_log_file
     )
   }
   tibble(
@@ -96,8 +126,7 @@ run_step <- function(step, script, script_args = character(), env = character())
     started_at = as.character(start_time),
     ended_at = as.character(end_time),
     elapsed_seconds = as.numeric(difftime(end_time, start_time, units = "secs")),
-    stdout_log = normalizePath(stdout_log, mustWork = FALSE),
-    stderr_log = normalizePath(stderr_log, mustWork = FALSE)
+    step_log = normalizePath(step_log_file, mustWork = FALSE)
   )
 }
 

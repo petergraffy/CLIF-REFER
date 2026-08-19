@@ -94,7 +94,7 @@ end with output written under:
 output\resubmission\<timestamp>\
 ```
 
-During the full pipeline, each step writes stdout and stderr logs under:
+During the full pipeline, each step writes a combined step log under:
 
 ```text
 output\resubmission\<timestamp>\logs\
@@ -116,8 +116,8 @@ The two most common Windows problems are:
 If the setup script fails while installing a package, send the complete console
 log beginning with the `00_setup_renv.R` command. If the pipeline fails after
 setup succeeds, send the complete console log beginning with the
-`00_run_full_resubmission_pipeline.R` command plus the two log files for the
-failed step from `output\resubmission\<timestamp>\logs\`.
+`00_run_full_resubmission_pipeline.R` command plus the failed step log from
+`output\resubmission\<timestamp>\logs\`.
 
 `00_run_full_resubmission_pipeline.R`
 

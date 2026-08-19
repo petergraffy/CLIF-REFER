@@ -147,7 +147,7 @@ if (is.na(primary_dataset_arg) || !file.exists(primary_dataset_arg)) {
   step_log[[length(step_log) + 1]] <- run_step(
     "Build ARF cohorts from raw CLIF/ZCTA data",
     cohort_builder,
-    env = c(paste0("REFER_RESUBMISSION_OUTPUT_DIR=", normalizePath(private_work_dir, mustWork = FALSE)))
+    script_args = c(normalizePath(private_work_dir, mustWork = FALSE))
   )
   primary_dataset <- file.path(private_work_dir, "resubmission_analysis_dataset.csv")
   no_icu_dataset <- file.path(private_work_dir, "resubmission_analysis_dataset_no_icu_los_restriction.csv")

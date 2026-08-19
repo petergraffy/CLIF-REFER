@@ -39,6 +39,10 @@ if (is.na(script_path)) {
   script_path <- if (length(cmd_file)) normalizePath(sub("^--file=", "", cmd_file[[1]]), mustWork = TRUE) else NA_character_
 }
 repo_guess <- if (!is.na(script_path)) normalizePath(file.path(dirname(script_path), "..", ".."), mustWork = FALSE) else getwd()
+args <- commandArgs(trailingOnly = TRUE)
+arg_or <- function(i, default = NA_character_) {
+  if (length(args) >= i && nzchar(args[[i]])) args[[i]] else default
+}
 
 config_path <- Sys.getenv(
   "REFER_RESUBMISSION_CONFIG",
@@ -84,9 +88,12 @@ imv_at_discharge_window_hours <- as.numeric(config$imv_at_discharge_window_hours
 primary_min_icu_los_hours <- as.numeric(config$primary_min_icu_los_hours %||% 24)
 
 stamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
-out_root <- Sys.getenv(
-  "REFER_RESUBMISSION_OUTPUT_DIR",
-  file.path(repo, config$output_dir %||% "output/resubmission", stamp)
+out_root <- arg_or(
+  1,
+  Sys.getenv(
+    "REFER_RESUBMISSION_OUTPUT_DIR",
+    file.path(repo, config$output_dir %||% "output/resubmission", stamp)
+  )
 )
 fig_dir <- file.path(out_root, "figures")
 dir.create(out_root, recursive = TRUE, showWarnings = FALSE)

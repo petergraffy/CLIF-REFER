@@ -145,6 +145,10 @@ aggregate export into one timestamped folder:
 Rscript code/resubmission/00_run_full_resubmission_pipeline.R
 ```
 
+The cohort-builder step now receives its working output folder as an explicit
+script argument from the full pipeline runner. This avoids relying on Windows
+environment-variable passing between parent and child R processes.
+
 For local development only, reruns can start from an existing row-level cohort
 export. These files are PHI-bearing working files and should not be uploaded
 for pooling:

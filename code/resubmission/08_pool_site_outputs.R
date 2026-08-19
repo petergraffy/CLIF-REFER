@@ -518,6 +518,34 @@ build_primary_exposure_rug <- function() {
 
 primary_rug <- build_primary_exposure_rug()
 
+exposure_plot_lower_quantile <- as.numeric(Sys.getenv("REFER_EXPOSURE_RESPONSE_X_Q_LOW", "0.05"))
+exposure_plot_upper_quantile <- as.numeric(Sys.getenv("REFER_EXPOSURE_RESPONSE_X_Q_HIGH", "0.95"))
+
+weighted_quantile <- function(x, w, probs) {
+  ok <- is.finite(x) & is.finite(w) & w > 0
+  x <- x[ok]
+  w <- w[ok]
+  if (length(x) < 2 || sum(w) <= 0) return(rep(NA_real_, length(probs)))
+  o <- order(x)
+  x <- x[o]
+  w <- w[o]
+  cw <- cumsum(w) / sum(w)
+  stats::approx(c(0, cw), c(x[[1]], x), xout = probs, rule = 2, ties = "ordered")$y
+}
+
+exposure_plot_windows <- primary_rug %>%
+  filter(group_var == "overall", is.finite(exposure_raw), is.finite(n), n > 0) %>%
+  group_by(pollutant) %>%
+  summarise(
+    x_low = weighted_quantile(exposure_raw, n, exposure_plot_lower_quantile)[[1]],
+    x_high = weighted_quantile(exposure_raw, n, exposure_plot_upper_quantile)[[1]],
+    n_total = sum(n, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(is.finite(x_low), is.finite(x_high), x_high > x_low)
+
+readr::write_csv(exposure_plot_windows, file.path(out_dir, "pooled_exposure_response_plot_windows.csv"))
+
 pool_aj_curve <- function(tbl, id_cols, grid = seq(0, 28, by = 0.25)) {
   if (!nrow(tbl)) return(tibble())
   tbl <- tbl %>%
@@ -749,6 +777,11 @@ make_separate_rug_panel <- function(rugs, group_col, palette_values, pollutant_v
     geom_point(shape = "|", size = 1.8, show.legend = FALSE) +
     scale_color_manual(values = palette_values, drop = TRUE) +
     scale_alpha_continuous(range = c(0.12, 0.55), guide = "none") +
+    scale_x_continuous(limits = exposure_plot_windows %>%
+                         filter(as.character(pollutant) == pollutant_value) %>%
+                         select(x_low, x_high) %>%
+                         unlist(use.names = FALSE),
+                       expand = expansion(mult = c(0.01, 0.01))) +
     scale_y_discrete(drop = FALSE) +
     labs(x = pollutant_x_labels[[as.character(pollutant_value)]], y = NULL) +
     theme_classic(base_size = 11) +
@@ -773,8 +806,26 @@ make_combined_curve_plot <- function(df, rugs, palette_values, filename_stub, pl
     mutate(group_level = factor(as.character(group_level), levels = names(palette_values)))
 
   p <- wrap_pollutant_panels(function(pollutant_value) {
-    plot_df <- df %>% filter(as.character(pollutant) == pollutant_value)
-    plot_rugs <- rugs %>% filter(as.character(pollutant) == pollutant_value)
+    x_window <- exposure_plot_windows %>%
+      filter(as.character(pollutant) == pollutant_value) %>%
+      select(x_low, x_high) %>%
+      unlist(use.names = FALSE)
+    if (length(x_window) != 2 || any(!is.finite(x_window)) || x_window[[2]] <= x_window[[1]]) {
+      plot_df_window <- df %>% filter(as.character(pollutant) == pollutant_value)
+      x_window <- range(plot_df_window$exposure_raw, na.rm = TRUE)
+    }
+    plot_df <- df %>%
+      filter(
+        as.character(pollutant) == pollutant_value,
+        exposure_raw >= x_window[[1]],
+        exposure_raw <= x_window[[2]]
+      )
+    plot_rugs <- rugs %>%
+      filter(
+        as.character(pollutant) == pollutant_value,
+        exposure_raw >= x_window[[1]],
+        exposure_raw <= x_window[[2]]
+      )
 
     curve_plot <- ggplot(plot_df, aes(exposure_raw, estimate_plot, color = group_level, fill = group_level)) +
       geom_blank(data = make_y_window_df(plot_df), aes(x = exposure_raw, y = y_value), inherit.aes = FALSE) +
@@ -783,6 +834,7 @@ make_combined_curve_plot <- function(df, rugs, palette_values, filename_stub, pl
       facet_grid(y_label ~ ., scales = "free_y", switch = "y") +
       scale_color_manual(values = palette_values, drop = TRUE) +
       scale_fill_manual(values = palette_values, drop = TRUE) +
+      scale_x_continuous(limits = x_window, expand = expansion(mult = c(0.01, 0.01))) +
       scale_y_continuous(labels = label_outcome_axis, expand = expansion(mult = c(0, 0))) +
       labs(title = pollutant_title(pollutant_value), x = NULL, y = NULL, color = NULL, fill = NULL) +
       theme_response()

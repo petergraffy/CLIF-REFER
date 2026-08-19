@@ -62,6 +62,17 @@ message("Restoring R package environment from: ", lockfile)
 message("Bootstrap user library: ", user_library)
 message("Project library: ", project_library)
 message("CRAN repository: ", getOption("repos")[["CRAN"]])
-renv::restore(project = repo, library = project_library, lockfile = lockfile, prompt = FALSE)
+exclude_packages <- strsplit(Sys.getenv("REFER_RENV_EXCLUDE_PACKAGES", "duckdb"), "[,; ]+")[[1]]
+exclude_packages <- exclude_packages[nzchar(exclude_packages)]
+if (length(exclude_packages)) {
+  message("Skipping packages not required by the resubmission pipeline: ", paste(exclude_packages, collapse = ", "))
+}
+renv::restore(
+  project = repo,
+  library = project_library,
+  lockfile = lockfile,
+  exclude = exclude_packages,
+  prompt = FALSE
+)
 
 message("renv restore complete.")

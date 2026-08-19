@@ -25,6 +25,88 @@ Posit Package Manager for CRAN binaries, and disables silent source-build
 fallbacks. If a site must use an institutional CRAN mirror, set
 `REFER_RENV_CRAN_REPO` before running the setup script.
 
+By default, `00_setup_renv.R` skips `duckdb` during `renv::restore()` because
+the resubmission pipeline does not use it and several Windows systems try to
+compile it from source. Sites should pull the latest repository version if they
+see a `duckdb` compilation error. The skip list can be changed with
+`REFER_RENV_EXCLUDE_PACKAGES`, but sites should not need to do this for the
+REFER resubmission run.
+
+## Windows Command-Line Instructions
+
+Use PowerShell or Command Prompt from the cloned repository root. Do not run the
+files line-by-line from the R console, and do not double-click the scripts. The
+working directory must be the folder that contains `code`, `config`, `exposome`,
+and `renv.lock`.
+
+First, open PowerShell and move to the repository folder:
+
+```powershell
+cd "C:\Users\<username>\Projects\CLIF-REFER"
+```
+
+Confirm that PowerShell is in the correct place:
+
+```powershell
+Test-Path "code\resubmission\00_setup_renv.R"
+Test-Path "code\resubmission\00_run_full_resubmission_pipeline.R"
+Test-Path "renv.lock"
+Test-Path "exposome\zcta\zcta_acs_community_covariates_2005_2023.csv.gz"
+```
+
+Each command should print `True`. If any command prints `False`, the current
+folder is not the cloned repository root or the repository is incomplete.
+
+If `Rscript` works from the command line, run:
+
+```powershell
+Rscript --vanilla "code\resubmission\00_setup_renv.R"
+Rscript --vanilla "code\resubmission\00_run_full_resubmission_pipeline.R"
+```
+
+If Windows says `Rscript is not recognized`, R is installed but not on the
+system `PATH`. Use the full path to `Rscript.exe` instead. Common locations are:
+
+```powershell
+& "C:\Program Files\R\R-4.4.2\bin\Rscript.exe" --vanilla "code\resubmission\00_setup_renv.R"
+& "C:\Program Files\R\R-4.4.2\bin\Rscript.exe" --vanilla "code\resubmission\00_run_full_resubmission_pipeline.R"
+```
+
+or:
+
+```powershell
+& "C:\Users\<username>\AppData\Local\Programs\R\R-4.4.2\bin\x64\Rscript.exe" --vanilla "code\resubmission\00_setup_renv.R"
+& "C:\Users\<username>\AppData\Local\Programs\R\R-4.4.2\bin\x64\Rscript.exe" --vanilla "code\resubmission\00_run_full_resubmission_pipeline.R"
+```
+
+Replace `R-4.4.2` with the R version installed at the site, if needed. To find
+the installed `Rscript.exe`, run:
+
+```powershell
+Get-ChildItem -Path "C:\Program Files\R" -Filter Rscript.exe -Recurse -ErrorAction SilentlyContinue
+Get-ChildItem -Path "$env:LOCALAPPDATA\Programs\R" -Filter Rscript.exe -Recurse -ErrorAction SilentlyContinue
+```
+
+The setup step should end with `renv restore complete.` The full pipeline should
+end with output written under:
+
+```text
+output\resubmission\<timestamp>\
+```
+
+The two most common Windows problems are:
+
+- `Rscript is not recognized`: use the full path to `Rscript.exe` as shown
+  above, or add R to the Windows `PATH`.
+- Scripts use the wrong directories: reopen PowerShell, `cd` to the cloned
+  repository root, confirm the `Test-Path` checks above, and rerun the two
+  commands from there.
+
+If the setup script fails while installing a package, send the complete console
+log beginning with the `00_setup_renv.R` command. If the pipeline fails after
+setup succeeds, send the complete console log beginning with the
+`00_run_full_resubmission_pipeline.R` command.
+
 `00_run_full_resubmission_pipeline.R`
 
 This is the site-facing one-command runner. With no arguments, it first builds

@@ -56,7 +56,7 @@ tail_file <- function(path, n = 80) {
   utils::tail(lines, n)
 }
 
-run_step <- function(step, script, script_args = character(), env = character()) {
+run_step <- function(step, script, script_args = character()) {
   message("\n== ", step, " ==")
   message("Running: ", paste(c(rscript, "--vanilla", script, script_args), collapse = " "))
   log_stub <- step_log_name(step)
@@ -69,7 +69,7 @@ run_step <- function(step, script, script_args = character(), env = character())
       paste0("Repository: ", repo),
       paste0("Working directory: ", getwd()),
       paste0("Command: ", paste(c(rscript, "--vanilla", script, script_args), collapse = " ")),
-      if (length(env)) paste0("Environment: ", paste(env, collapse = "; ")) else "Environment: none",
+      "Environment: none",
       ""
     ),
     step_log_file,
@@ -82,7 +82,6 @@ run_step <- function(step, script, script_args = character(), env = character())
       system2(
         rscript,
         args = c("--vanilla", script, script_args),
-        env = env,
         stdout = TRUE,
         stderr = TRUE
       ),
@@ -185,8 +184,7 @@ reviewer_dataset <- file.path(private_work_dir, "analysis_dataset_reviewer_optim
 step_log[[length(step_log) + 1]] <- run_step(
   "Primary day-28 mortality, Cox sensitivity, VFD, Table 1, COVID sensitivity",
   primary_script,
-  c(primary_dataset, out_dir, reviewer_dataset),
-  env = c("REFER_EXPORT_ROW_LEVEL_DATASETS=false")
+  c(primary_dataset, out_dir, reviewer_dataset)
 )
 
 if (!file.exists(reviewer_dataset)) {

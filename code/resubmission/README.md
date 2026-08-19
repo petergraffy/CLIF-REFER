@@ -94,6 +94,17 @@ end with output written under:
 output\resubmission\<timestamp>\
 ```
 
+During the full pipeline, each step writes stdout and stderr logs under:
+
+```text
+output\resubmission\<timestamp>\logs\
+```
+
+If a step fails, the runner prints the last lines from those logs and reports
+the log folder. This is usually the fastest way to see whether the issue is a
+missing CLIF table, an unexpected column name, a missing exposome file, or an
+incorrect `config\config.json` path.
+
 The two most common Windows problems are:
 
 - `Rscript is not recognized`: use the full path to `Rscript.exe` as shown
@@ -105,7 +116,8 @@ The two most common Windows problems are:
 If the setup script fails while installing a package, send the complete console
 log beginning with the `00_setup_renv.R` command. If the pipeline fails after
 setup succeeds, send the complete console log beginning with the
-`00_run_full_resubmission_pipeline.R` command.
+`00_run_full_resubmission_pipeline.R` command plus the two log files for the
+failed step from `output\resubmission\<timestamp>\logs\`.
 
 `00_run_full_resubmission_pipeline.R`
 

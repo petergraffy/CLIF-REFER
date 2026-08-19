@@ -35,25 +35,59 @@ no_icu_dataset_arg <- arg_or(2)
 resubmission_dir <- file.path(repo, "code", "resubmission")
 out_dir <- arg_or(3, file.path(repo, "output", "resubmission", stamp))
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+log_dir <- file.path(out_dir, "logs")
+dir.create(log_dir, recursive = TRUE, showWarnings = FALSE)
 private_work_dir <- file.path(tempdir(), paste0("refer_resubmission_private_", stamp))
 dir.create(private_work_dir, recursive = TRUE, showWarnings = FALSE)
 
 rscript <- file.path(R.home("bin"), "Rscript")
 
+step_log_name <- function(step) {
+  x <- tolower(step)
+  x <- gsub("[^a-z0-9]+", "_", x)
+  x <- gsub("^_|_$", "", x)
+  paste0(format(Sys.time(), "%H%M%S"), "_", x)
+}
+
+tail_file <- function(path, n = 80) {
+  if (!file.exists(path)) return(character())
+  lines <- readLines(path, warn = FALSE)
+  if (!length(lines)) return(character())
+  utils::tail(lines, n)
+}
+
 run_step <- function(step, script, script_args = character(), env = character()) {
   message("\n== ", step, " ==")
   message("Running: ", paste(c(rscript, "--vanilla", script, script_args), collapse = " "))
+  log_stub <- step_log_name(step)
+  stdout_log <- file.path(log_dir, paste0(log_stub, ".stdout.log"))
+  stderr_log <- file.path(log_dir, paste0(log_stub, ".stderr.log"))
+  message("Stdout log: ", stdout_log)
+  message("Stderr log: ", stderr_log)
   start_time <- Sys.time()
   status <- system2(
     rscript,
     args = c("--vanilla", script, script_args),
     env = env,
-    stdout = "",
-    stderr = ""
+    stdout = stdout_log,
+    stderr = stderr_log
   )
   end_time <- Sys.time()
   if (!identical(status, 0L)) {
-    stop("Step failed: ", step, " (exit status ", status, ")")
+    stdout_tail <- tail_file(stdout_log)
+    stderr_tail <- tail_file(stderr_log)
+    if (length(stdout_tail)) {
+      message("\n--- Last lines from stdout log ---")
+      message(paste(stdout_tail, collapse = "\n"))
+    }
+    if (length(stderr_tail)) {
+      message("\n--- Last lines from stderr log ---")
+      message(paste(stderr_tail, collapse = "\n"))
+    }
+    stop(
+      "Step failed: ", step, " (exit status ", status, "). ",
+      "See logs in: ", log_dir
+    )
   }
   tibble(
     step = step,
@@ -61,7 +95,9 @@ run_step <- function(step, script, script_args = character(), env = character())
     status = "completed",
     started_at = as.character(start_time),
     ended_at = as.character(end_time),
-    elapsed_seconds = as.numeric(difftime(end_time, start_time, units = "secs"))
+    elapsed_seconds = as.numeric(difftime(end_time, start_time, units = "secs")),
+    stdout_log = normalizePath(stdout_log, mustWork = FALSE),
+    stderr_log = normalizePath(stderr_log, mustWork = FALSE)
   )
 }
 
@@ -72,6 +108,7 @@ find_existing <- function(paths) {
 
 message("Repository: ", repo)
 message("Unified output directory: ", out_dir)
+message("Step logs directory: ", log_dir)
 message("Private row-level working directory: ", private_work_dir)
 
 step_log <- list()

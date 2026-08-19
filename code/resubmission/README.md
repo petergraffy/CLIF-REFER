@@ -12,6 +12,16 @@ The goal is not to expand the analysis in every direction. It implements only th
 
 ## Main Script
 
+`00_run_from_rstudio.R`
+
+This is the easiest option for sites that prefer not to use PowerShell,
+Command Prompt, or Terminal. Open the file in RStudio and click **Source**. It
+finds the repository root, runs `00_setup_renv.R`, and then runs the full
+resubmission pipeline using the current R installation.
+
+Do not run the file line-by-line. Source the full file so it can set the working
+directory correctly before launching the pipeline.
+
 `00_setup_renv.R`
 
 Sites should restore the R package environment before running the analysis:
@@ -33,6 +43,11 @@ see a `duckdb` compilation error. The skip list can be changed with
 REFER resubmission run.
 
 ## Windows Command-Line Instructions
+
+Sites using RStudio can avoid the command line entirely by opening
+`code/resubmission/00_run_from_rstudio.R` and clicking **Source**. The
+command-line instructions below are a fallback for sites that prefer PowerShell
+or need to debug outside RStudio.
 
 Use PowerShell or Command Prompt from the cloned repository root. Do not run the
 files line-by-line from the R console, and do not double-click the scripts. The

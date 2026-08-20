@@ -409,10 +409,24 @@ make_separate_rug_panel <- function(rugs, group_col, palette_values, pollutant_v
   rugs <- rugs %>%
     mutate(rug_level = factor(as.character(!!group_col), levels = names(palette_values))) %>%
     filter(!is.na(rug_level))
+  if (!"n" %in% names(rugs)) {
+    rugs <- rugs %>% mutate(n = 1)
+  }
+  rugs <- rugs %>%
+    group_by(rug_level, exposure_raw) %>%
+    summarise(n = sum(n, na.rm = TRUE), .groups = "drop") %>%
+    mutate(
+      density_alpha = if (n_distinct(n) > 1) {
+        scales::rescale(log1p(n), to = c(0.08, 1.00))
+      } else {
+        0.70
+      }
+    )
 
-  ggplot(rugs, aes(x = exposure_raw, y = rug_level, color = rug_level)) +
-    geom_point(shape = "|", size = 1.8, alpha = 0.32, show.legend = FALSE) +
+  ggplot(rugs, aes(x = exposure_raw, y = rug_level, color = rug_level, alpha = density_alpha)) +
+    geom_point(shape = "|", size = 3.3, show.legend = FALSE) +
     scale_color_manual(values = palette_values, drop = TRUE) +
+    scale_alpha_identity(guide = "none") +
     scale_y_discrete(drop = FALSE) +
     labs(x = pollutant_x_labels[[as.character(pollutant_value)]], y = NULL) +
     theme_classic(base_size = 11) +

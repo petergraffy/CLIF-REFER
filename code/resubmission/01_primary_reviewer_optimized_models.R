@@ -1359,6 +1359,7 @@ table1_df <- prepare_table1_frame(analysis_df)
 
 table1_continuous_vars <- c(
   "age",
+  "charlson_score",
   "pm25_mean",
   "no2_mean",
   "svi_overall",
@@ -1381,7 +1382,8 @@ table1_continuous_vars <- c(
 
 table1_continuous_labels <- c(
   age = "Age (years)",
-  pm25_mean = "PM2.5 (annual mean, ug/m3)",
+  charlson_score = "Charlson comorbidity index",
+  pm25_mean = "PM\u2082\u2024\u2085 (annual mean, ug/m3)",
   no2_mean = "NO2 (annual mean, ppb)",
   svi_overall = "SVI (overall)",
   acs_pct_poverty = "ZCTA poverty (%)",

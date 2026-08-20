@@ -237,6 +237,131 @@ readr::write_csv(sensitivity_pooled, file.path(out_dir, "pooled_sensitivity_effe
 readr::write_csv(subgroup_effects, file.path(out_dir, "site_subgroup_effect_estimates.csv"))
 readr::write_csv(subgroup_pooled, file.path(out_dir, "pooled_subgroup_effect_estimates.csv"))
 
+format_n_pct <- function(n, denom, digits = 1) {
+  ifelse(
+    is.finite(n) & is.finite(denom) & denom > 0,
+    paste0(format(round(n), big.mark = ","), " (", sprintf(paste0("%.", digits, "f"), 100 * n / denom), "%)"),
+    NA_character_
+  )
+}
+
+format_mean_sd <- function(mean, sd, digits = 1) {
+  ifelse(
+    is.finite(mean) & is.finite(sd),
+    paste0(sprintf(paste0("%.", digits, "f"), mean), " +/- ", sprintf(paste0("%.", digits, "f"), sd)),
+    NA_character_
+  )
+}
+
+pool_continuous_table1 <- function(tbl) {
+  if (!nrow(tbl)) return(tibble())
+  tbl %>%
+    mutate(
+      site_n = as.numeric(n),
+      mean_value = as.numeric(.data$mean),
+      sd_value = as.numeric(.data$sd),
+      q25_value = as.numeric(.data$q25),
+      median_value = as.numeric(.data$median),
+      q75_value = as.numeric(.data$q75)
+    ) %>%
+    filter(is.finite(site_n), site_n > 0) %>%
+    group_by(table, variable, label) %>%
+    summarise(
+      n_sites = n_distinct(site),
+      n = sum(site_n, na.rm = TRUE),
+      mean = sum(site_n * mean_value, na.rm = TRUE) / sum(site_n, na.rm = TRUE),
+      sd = {
+        pooled_n <- sum(site_n, na.rm = TRUE)
+        pooled_mean <- sum(site_n * mean_value, na.rm = TRUE) / pooled_n
+        sqrt(sum((site_n - 1) * sd_value^2 + site_n * (mean_value - pooled_mean)^2, na.rm = TRUE) / pmax(pooled_n - 1, 1))
+      },
+      q25_site_weighted = sum(site_n * q25_value, na.rm = TRUE) / sum(site_n, na.rm = TRUE),
+      median_site_weighted = sum(site_n * median_value, na.rm = TRUE) / sum(site_n, na.rm = TRUE),
+      q75_site_weighted = sum(site_n * q75_value, na.rm = TRUE) / sum(site_n, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      variable_type = "continuous",
+      level = NA_character_,
+      denominator = n,
+      pct = NA_real_,
+      display = paste0(
+        format_mean_sd(mean, sd),
+        " (median approx. ",
+        sprintf("%.1f", median_site_weighted),
+        "; IQR approx. ",
+        sprintf("%.1f", q25_site_weighted),
+        ", ",
+        sprintf("%.1f", q75_site_weighted),
+        ")"
+      )
+    ) %>%
+    select(table, variable_type, variable, label, level, n_sites, n, denominator, pct,
+           mean, sd, q25_site_weighted, median_site_weighted, q75_site_weighted, display)
+}
+
+pool_categorical_table1 <- function(tbl) {
+  if (!nrow(tbl)) return(tibble())
+  variable_denominators <- tbl %>%
+    mutate(n = as.numeric(n), total_n = as.numeric(total_n)) %>%
+    group_by(table, variable, label, site) %>%
+    summarise(site_total_n = max(total_n, na.rm = TRUE), .groups = "drop") %>%
+    group_by(table, variable, label) %>%
+    summarise(denominator = sum(site_total_n, na.rm = TRUE), .groups = "drop")
+
+  tbl %>%
+    mutate(n = as.numeric(n), total_n = as.numeric(total_n)) %>%
+    group_by(table, variable, label, level) %>%
+    summarise(
+      n_sites = n_distinct(site),
+      n = sum(n, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    left_join(variable_denominators, by = c("table", "variable", "label")) %>%
+    mutate(
+      variable_type = "categorical",
+      pct = if_else(denominator > 0, 100 * n / denominator, NA_real_),
+      mean = NA_real_,
+      sd = NA_real_,
+      q25_site_weighted = NA_real_,
+      median_site_weighted = NA_real_,
+      q75_site_weighted = NA_real_,
+      display = format_n_pct(n, denominator)
+    ) %>%
+    select(table, variable_type, variable, label, level, n_sites, n, denominator, pct,
+           mean, sd, q25_site_weighted, median_site_weighted, q75_site_weighted, display)
+}
+
+table1_continuous_site <- read_sites("table1_continuous_site_resubmission.csv")
+table1_categorical_site <- read_sites("table1_categorical_site_resubmission.csv")
+table1_chronic_site <- read_sites("table1_baseline_chronic_disease_prevalence.csv")
+
+table1_continuous_pooled <- pool_continuous_table1(table1_continuous_site)
+table1_categorical_pooled <- pool_categorical_table1(table1_categorical_site)
+table1_chronic_pooled <- table1_chronic_site %>%
+  transmute(table, domain, variable, label, n = as.numeric(n), denominator = as.numeric(denominator), site) %>%
+  group_by(table, domain, variable, label) %>%
+  summarise(
+    n_sites = n_distinct(site),
+    n = sum(n, na.rm = TRUE),
+    denominator = sum(denominator, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    prevalence = if_else(denominator > 0, n / denominator, NA_real_),
+    prevalence_percent = 100 * prevalence,
+    display = format_n_pct(n, denominator)
+  )
+table1_pooled <- bind_rows(table1_continuous_pooled, table1_categorical_pooled)
+
+readr::write_csv(table1_continuous_site, file.path(out_dir, "site_table1_continuous_resubmission.csv"))
+readr::write_csv(table1_categorical_site, file.path(out_dir, "site_table1_categorical_resubmission.csv"))
+readr::write_csv(table1_chronic_site, file.path(out_dir, "site_table1_baseline_chronic_disease_prevalence.csv"))
+readr::write_csv(table1_continuous_pooled, file.path(out_dir, "pooled_table1_continuous_resubmission.csv"))
+readr::write_csv(table1_categorical_pooled, file.path(out_dir, "pooled_table1_categorical_resubmission.csv"))
+readr::write_csv(table1_chronic_pooled, file.path(out_dir, "pooled_table1_baseline_chronic_disease_prevalence.csv"))
+readr::write_csv(table1_pooled, file.path(out_dir, "pooled_table1_resubmission_long.csv"))
+
 inclusion_flow <- read_sites("site_inclusion_flow_counts.csv")
 readr::write_csv(inclusion_flow, file.path(out_dir, "pooled_site_inclusion_flow_counts_long.csv"))
 inclusion_summary <- inclusion_flow %>%
@@ -518,8 +643,8 @@ build_primary_exposure_rug <- function() {
 
 primary_rug <- build_primary_exposure_rug()
 
-exposure_plot_lower_quantile <- as.numeric(Sys.getenv("REFER_EXPOSURE_RESPONSE_X_Q_LOW", "0.05"))
-exposure_plot_upper_quantile <- as.numeric(Sys.getenv("REFER_EXPOSURE_RESPONSE_X_Q_HIGH", "0.95"))
+exposure_plot_lower_quantile <- as.numeric(Sys.getenv("REFER_EXPOSURE_RESPONSE_X_Q_LOW", "0.025"))
+exposure_plot_upper_quantile <- as.numeric(Sys.getenv("REFER_EXPOSURE_RESPONSE_X_Q_HIGH", "0.975"))
 
 weighted_quantile <- function(x, w, probs) {
   ok <- is.finite(x) & is.finite(w) & w > 0
@@ -772,11 +897,21 @@ make_separate_rug_panel <- function(rugs, group_col, palette_values, pollutant_v
   if (!"n" %in% names(rugs)) {
     rugs <- rugs %>% mutate(n = 1)
   }
+  rugs <- rugs %>%
+    group_by(rug_level, exposure_raw) %>%
+    summarise(n = sum(n, na.rm = TRUE), .groups = "drop") %>%
+    mutate(
+      density_alpha = if (n_distinct(n) > 1) {
+        scales::rescale(log1p(n), to = c(0.08, 1.00))
+      } else {
+        0.70
+      }
+    )
 
-  ggplot(rugs, aes(x = exposure_raw, y = rug_level, color = rug_level, alpha = n)) +
-    geom_point(shape = "|", size = 1.8, show.legend = FALSE) +
+  ggplot(rugs, aes(x = exposure_raw, y = rug_level, color = rug_level, alpha = density_alpha)) +
+    geom_point(shape = "|", size = 3.3, show.legend = FALSE) +
     scale_color_manual(values = palette_values, drop = TRUE) +
-    scale_alpha_continuous(range = c(0.12, 0.55), guide = "none") +
+    scale_alpha_identity(guide = "none") +
     scale_x_continuous(limits = exposure_plot_windows %>%
                          filter(as.character(pollutant) == pollutant_value) %>%
                          select(x_low, x_high) %>%
@@ -989,7 +1124,8 @@ quartile_cols <- c(
   "Q4 highest" = "#B2182B"
 )
 tick_times <- c(0, 7, 14, 21, 28)
-x_limits_cif <- c(-2.5, 29.4)
+x_limits_cif <- c(-2.5, 31.0)
+x_limits_cif_curves_only <- c(-0.35, 28.35)
 outcome_levels_cif <- c("Extubation", "Death", "Persistent RF")
 pollutant_levels_cif <- c("NO2", "PM2.5")
 
@@ -1117,8 +1253,14 @@ aj_plot_data <- aj_pooled %>%
 
 aj_panel_scales <- aj_plot_data %>%
   group_by(pollutant, outcome) %>%
-  summarise(y_max = max(estimate, na.rm = TRUE), .groups = "drop") %>%
-  mutate(y_limit = pmax(y_max * 1.04, 0.01))
+  summarise(y_max = max(conf_high, estimate, na.rm = TRUE), .groups = "drop") %>%
+  mutate(
+    y_limit = case_when(
+      outcome == "Persistent RF" ~ pmax(ceiling(y_max / 0.005) * 0.005, 0.025),
+      outcome == "Death" ~ pmax(ceiling(y_max / 0.05) * 0.05, 0.25),
+      TRUE ~ pmax(ceiling(y_max / 0.10) * 0.10, 0.70)
+    )
+  )
 
 make_column_header <- function(label_expr) {
   ggplot() +
@@ -1138,23 +1280,36 @@ make_row_header <- function(label_text) {
     theme(plot.margin = margin(4, 8, 2, -2))
 }
 
-make_aj_curve_panel <- function(pollutant_value, outcome_value, show_y_axis = TRUE) {
+make_aj_curve_panel <- function(pollutant_value, outcome_value, show_y_axis = TRUE, show_x_axis = FALSE, x_limits_use = x_limits_cif) {
   dat <- aj_plot_data %>% filter(pollutant == pollutant_value, outcome == outcome_value)
   y_limit <- aj_panel_scales %>% filter(pollutant == pollutant_value, outcome == outcome_value) %>% pull(y_limit)
+  y_breaks <- if (identical(as.character(outcome_value), "Persistent RF")) {
+    seq(0, y_limit, by = 0.005)
+  } else if (identical(as.character(outcome_value), "Death")) {
+    seq(0, y_limit, by = 0.05)
+  } else {
+    seq(0, y_limit, by = 0.20)
+  }
+  y_labels <- if (identical(as.character(outcome_value), "Persistent RF")) {
+    label_percent(accuracy = 0.5)
+  } else {
+    label_percent(accuracy = 1)
+  }
 
   ggplot(dat, aes(x = time, y = estimate, color = exposure_quartile)) +
     geom_step(linewidth = 1.05) +
     scale_color_manual(values = quartile_cols, drop = FALSE) +
-    scale_x_continuous(breaks = tick_times, labels = label_number(accuracy = 1, trim = TRUE), limits = x_limits_cif, expand = expansion(mult = c(0.01, 0.01))) +
-    scale_y_continuous(labels = label_percent(accuracy = 1), limits = c(0, y_limit), expand = expansion(mult = c(0.015, 0.035))) +
-    labs(x = NULL, y = if (show_y_axis) "Cumulative incidence" else NULL, color = "Quartile") +
+    scale_x_continuous(breaks = tick_times, labels = label_number(accuracy = 1, trim = TRUE), limits = x_limits_use, expand = expansion(mult = c(0, 0))) +
+    scale_y_continuous(breaks = y_breaks, labels = y_labels, limits = c(0, y_limit), expand = expansion(mult = c(0.015, 0.035))) +
+    labs(x = if (show_x_axis) "Days since ARF onset" else NULL, y = if (show_y_axis) "Cumulative incidence" else NULL, color = "Quartile") +
     theme_cif_transplant() +
     theme(
       axis.title.y = if (show_y_axis) element_text(size = 19) else element_blank(),
       axis.text.y = if (show_y_axis) element_text(size = 17, color = "grey20") else element_blank(),
       axis.ticks.y = if (show_y_axis) element_line(color = "black", linewidth = 0.35) else element_blank(),
+      axis.title.x = if (show_x_axis) element_text(size = 18, margin = margin(t = 7)) else element_blank(),
       legend.position = "bottom",
-      plot.margin = margin(4, 8, 1, 8)
+      plot.margin = margin(4, 8, if (show_x_axis) 8 else 1, 8)
     )
 }
 
@@ -1164,7 +1319,7 @@ make_aj_table_panel <- function(pollutant_value, outcome_value, show_x_axis = FA
     mutate(exposure_quartile = factor(exposure_quartile, levels = rev(quartile_labels)))
 
   ggplot(dat, aes(x = time, y = exposure_quartile, label = label, color = exposure_quartile)) +
-    geom_text(size = 5.2, fontface = "bold") +
+    geom_text(size = 4.75, fontface = "bold") +
     scale_color_manual(values = quartile_cols, drop = FALSE, guide = "none") +
     scale_x_continuous(breaks = tick_times, labels = label_number(accuracy = 1, trim = TRUE), limits = x_limits_cif, expand = expansion(mult = c(0.01, 0.01))) +
     scale_y_discrete(labels = function(x) str_replace(x, " lowest| highest", "")) +
@@ -1175,7 +1330,7 @@ make_aj_table_panel <- function(pollutant_value, outcome_value, show_x_axis = FA
       axis.text.x = if (show_x_axis) element_text(size = 16, color = "grey20", margin = margin(t = 2)) else element_blank(),
       axis.ticks.x = if (show_x_axis) element_line(color = "black", linewidth = 0.25) else element_blank(),
       legend.position = "none",
-      plot.margin = margin(1, 30, if (show_x_axis) 6 else 2, 8)
+      plot.margin = margin(1, 38, if (show_x_axis) 6 else 2, 8)
     )
 }
 
@@ -1211,6 +1366,17 @@ make_cif_layout <- function(cell_fun, header_margin = c(12, 8, -18, 8)) {
 
 p_aj <- make_cif_layout(make_aj_cell)
 write_plot(p_aj, "pooled_unadjusted_aalen_johansen_cif", width = 21, height = 19)
+
+p_aj_curves_only <- make_cif_layout(function(pollutant_value, outcome_value, show_y_axis = TRUE, show_x_axis = FALSE) {
+  make_aj_curve_panel(
+    pollutant_value,
+    outcome_value,
+    show_y_axis = show_y_axis,
+    show_x_axis = show_x_axis,
+    x_limits_use = x_limits_cif_curves_only
+  )
+})
+write_plot(p_aj_curves_only, "pooled_unadjusted_aalen_johansen_cif_curves_only", width = 21, height = 16)
 
 fg_plot_data <- fg_curve_pooled %>%
   mutate(

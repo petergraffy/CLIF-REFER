@@ -235,12 +235,12 @@ flow_long <- bind_rows(
   ),
   add_flow_row(
     5,
-    "Primary ARF cohort with PM2.5 exposure",
+    "Primary ARF cohort with PM\u2082\u2024\u2085 exposure",
     n_with_pm25,
     NA_integer_,
     if (!is.na(n_arf_primary) && !is.na(n_with_pm25)) n_arf_primary - n_with_pm25 else NA_integer_,
     source_file = "resubmission_cohort_summary.csv",
-    notes = "ZCTA-level 12-month PM2.5 exposure available."
+    notes = "ZCTA-level 12-month PM\u2082\u2024\u2085 exposure available."
   ),
   add_flow_row(
     6,
@@ -253,7 +253,7 @@ flow_long <- bind_rows(
   ),
   add_flow_row(
     7,
-    "Primary ARF cohort with both PM2.5 and NO2 exposure",
+    "Primary ARF cohort with both PM\u2082\u2024\u2085 and NO2 exposure",
     n_with_pm25_no2,
     NA_integer_,
     if (!is.na(n_arf_primary) && !is.na(n_with_pm25_no2)) n_arf_primary - n_with_pm25_no2 else NA_integer_,
@@ -282,7 +282,7 @@ flow_long <- bind_rows(
     },
     if (!is.na(n_arf_primary) && !is.na(n_primary_complete)) n_arf_primary - n_primary_complete else NA_integer_,
     source_file = "primary_mortality_day28_logistic_results.csv; primary_vfd_quasipoisson_results.csv",
-    notes = "Complete mortality day 28, VFD, IMV duration, PM2.5, NO2, and primary adjustment covariates."
+    notes = "Complete mortality day 28, VFD, IMV duration, PM\u2082\u2024\u2085, NO2, and primary adjustment covariates."
   ),
   add_flow_row(
     10,
@@ -314,7 +314,7 @@ flow_long <- bind_rows(
     },
     if (!is.na(n_imv_after_arf) && !is.na(n_competing_complete)) n_imv_after_arf - n_competing_complete else NA_integer_,
     source_file = "fine_gray_results_same_covariates_as_cox.csv",
-    notes = "Complete IMV competing-risk time/event, PM2.5, NO2, and primary adjustment covariates."
+    notes = "Complete IMV competing-risk time/event, PM\u2082\u2024\u2085, NO2, and primary adjustment covariates."
   ),
   add_flow_row(
     13,
